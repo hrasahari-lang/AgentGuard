@@ -1,0 +1,279 @@
+## 1. Independent Technical Review & Critical Assessment
+
+As an independent AI security architect and technical reviewer, here is my critical evaluation of the AgentGuard architecture, feasibility, and risk profile for an overnight hackathon MVP.
+
+### Answering the 5 Core Challenge Questions
+
+1. **Is MCP enough for our first universal-agent integration?**
+* **Verdict:** Yes, for an MCP-compatible client ecosystem (like OpenAI Agents SDK or Claude Desktop/MCP clients), but **no** as a universal solution for all existing frameworks (like vanilla CrewAI or AutoGen without native MCP tool declarations).
+* **Why:** MCP standardizes tool discovery and execution over JSON-RPC (stdio or SSE). However, legacy frameworks or custom scripts execute arbitrary Python functions locally. To make MCP "universal," the agent's runtime must be configured to point to AgentGuard as its MCP server. If an agent executes local shell commands or direct SQL via SQLAlchemy, MCP does nothing unless those tools are explicitly refactored into MCP tool definitions.
+
+
+2. **How do we prevent bypassing AgentGuard?**
+* **Verdict:** Credential isolation and network egress control.
+* **Why:** If the agent process possesses a raw database connection string or a direct GitHub PAT in its local environment variables (`os.environ`), it can bypass AgentGuard entirely. True security requires that **the agent never holds the credentials to protected systems**. Instead, the agent holds only a short-lived token to talk to the AgentGuard gateway, and AgentGuard holds the actual master credentials in a secure backend vault/environment.
+
+
+3. **Should AgentGuard be a gateway, a proxy, an agent runtime, or a combination?**
+* **Verdict:** A hybrid **MCP/API Gateway + Enforcement Proxy**.
+* **Why:** Building an agent runtime takes weeks and violates the BYOA (Bring Your Own Agent) vision. A passive dashboard is useless. A gateway/proxy actively intercepts tool calls, evaluates policies, and executes actions on behalf of the agent, making it the ideal architectural pattern.
+
+
+4. **How do we demonstrate compatibility without building agents ourselves?**
+* **Verdict:** Use two distinct, official client SDKs—one **OpenAI Agents SDK agent** configured with an MCP client transport, and one **custom Python script / lightweight CrewAI tool wrapper** making direct JSON-RPC calls to the AgentGuard MCP SSE endpoint. This proves protocol-level agnosticism without building complex multi-agent reasoning loops.
+
+
+5. **What is the smallest technically defensible product we can finish by morning?**
+* **Verdict:** A FastAPI backend acting as an MCP SSE/Streamable server, backed by SQLite (for speed) or PostgreSQL, a rule-based deterministic policy engine, a mock CRM tool database, a human approval table, and a minimalist React audit log viewer.
+
+
+
+---
+
+## 2. Corrected Architecture & Component Design
+
+```
++-----------------------------------------------------------------+
+|                       CONTROL PLANE                             |
+|  [Admin React UI] ---> [FastAPI Admin API] ---> [PostgreSQL DB] |
+|   - Agent Reg.          - RBAC & Policies      - Audit Records  |
+|   - Tool Config         - Approval Dashboard   - State Store    |
++-----------------------------------------------------------------+
+                                 |
+                                 v
++-----------------------------------------------------------------+
+|                      ENFORCEMENT PLANE                          |
+|                     [AgentGuard Gateway]                        |
+|                                                                 |
+|  [1. Authenticate] -> Verify Agent JWT / Token                  |
+|  [2. Intercept]    -> Parse incoming MCP Tool Call              |
+|  [3. Authorize]    -> Check RBAC / Resource Scope               |
+|  [4. Analyze]      -> Deterministic Risk Engine                 |
+|  [5. Decide]       -> ALLOW / REQUIRE_APPROVAL / DENY           |
+|  [6. Execute]      -> Run Tool via Backend Credentials          |
+|  [7. Audit]        -> Record Event (Fail-Closed on Error)       |
++-----------------------------------------------------------------+
+                                 |
+            +--------------------+--------------------+
+            | (If Approved)                           | (If Blocked)
+            v                                         v
+   [Protected CRM DB]                         [Block & Log Event]
+
+```
+
+---
+
+## 3. Project Folder Structure
+
+```text
+agentguard/
+├── backend/
+│   ├── app/
+│   │   ├── __init__.py
+│   │   ├── main.py                 # FastAPI application entrypoint
+│   │   ├── config.py               # Environment & settings
+│   │   ├── database.py             # SQLAlchemy session & base
+│   │   ├── models.py               # ORM models (Agents, Policies, Audit)
+│   │   ├── schemas.py              # Pydantic validation schemas
+│   │   ├── gateway/
+│   │   │   ├── __init__.py
+│   │   │   ├── mcp_server.py       # MCP protocol handler (FastMCP / SSE)
+│   │   │   └── executor.py         # Controlled tool execution engine
+│   │   ├── security/
+│   │   │   ├── __init__.py
+│   │   │   ├── auth.py             # Agent token verification
+│   │   │   ├── policy_engine.py    # RBAC & ABAC rule evaluator
+│   │   │   └── risk_engine.py      # Deterministic risk scoring
+│   │   └── workflows/
+│   │       ├── __init__.py
+│   │       └── render_task.py      # Render Workflows async execution
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── components/             # Audit logs, Approvals dashboard
+│   │   └── api/                    # Backend API client
+│   ├── package.json
+│   └── vite.config.js
+└── demo/
+    ├── openai_agent.py             # Demo Agent A (OpenAI Agents SDK / MCP)
+    ├── custom_agent.py             # Demo Agent B (Direct MCP JSON-RPC client)
+    └── mock_crm.db                 # Protected SQLite database
+
+```
+
+---
+
+## 4. Core Implementation Blueprints
+
+### A. Database Schema (`backend/app/models.py`)
+
+```python
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, Text, ForeignKey, JSON
+from sqlalchemy.sql import func
+from app.database import Base
+
+class Agent(Base):
+    __tablename__ = "agents"
+    id = Column(String, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    api_key_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False)  # e.g., 'sales_rep', 'support_agent'
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Tool(Base):
+    __tablename__ = "tools"
+    id = Column(String, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    description = Column(Text)
+    risk_level_default = Column(String, default="low") # low, medium, high
+
+class Policy(Base):
+    __tablename__ = "policies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role = Column(String, nullable=False)
+    tool_name = Column(String, nullable=False)
+    action = Column(String, nullable=False) # ALLOW, REQUIRE_APPROVAL, DENY
+    max_rows = Column(Integer, default=10)
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    agent_id = Column(String, ForeignKey("agents.id"))
+    tool_name = Column(String, nullable=False)
+    arguments = Column(JSON)
+    permission_result = Column(String, nullable=False) # ALLOW, REQUIRE_APPROVAL, DENY
+    risk_score = Column(Integer, default=0)
+    decision = Column(String, nullable=False)
+    execution_success = Column(Boolean, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+```
+
+### B. Policy & Risk Engine (`backend/app/security/policy_engine.py`)
+
+```python
+def evaluate_policy(agent_role: str, tool_name: str, arguments: dict, db_session) -> str:
+    """
+    Evaluates role-based permissions and argument constraints.
+    Fails closed if policy is missing or database error occurs.
+    """
+    try:
+        # Check explicit policy rule
+        # In a real setup, query policies table. Fallback mock logic for MVP:
+        if tool_name == "export_customer_records":
+            return "DENY" # Hard restriction
+        
+        if tool_name == "update_customer_record" and agent_role != "admin_agent":
+            return "REQUIRE_APPROVAL"
+            
+        if tool_name == "search_customer_records":
+            # ABAC check: limit row counts or sensitive search keys
+            if arguments.get("limit", 0) > 50:
+                return "REQUIRE_APPROVAL"
+            return "ALLOW"
+            
+        return "DENY" # Default fail-closed
+    except Exception:
+        return "DENY" # Fail-closed on failure
+
+```
+
+### C. MCP Server & Gateway Handler (`backend/app/gateway/mcp_server.py`)
+
+Using the official `mcp` Python SDK (FastMCP pattern):
+
+```python
+from mcp.server.fastmcp import FastMCP
+from app.security.policy_engine import evaluate_policy
+from app.database import SessionLocal
+from app.models import AuditEvent, Agent
+import sqlite3
+
+mcp = FastMCP("AgentGuard Secure Gateway")
+
+@mcp.tool()
+def search_customer_records(query: str, limit: int = 10, agent_id: str = "agent_default") -> str:
+    """Search customer CRM records securely through AgentGuard gateway."""
+    db = SessionLocal()
+    try:
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        role = agent.role if agent else "unauthenticated"
+        
+        # 1. Authorize & Decide
+        decision = evaluate_policy(role, "search_customer_records", {"query": query, "limit": limit}, db)
+        
+        # 2. Audit Record Creation
+        audit = AuditEvent(
+            agent_id=agent_id,
+            tool_name="search_customer_records",
+            arguments={"query": query, "limit": limit},
+            permission_result=decision,
+            risk_score=20 if limit > 20 else 5,
+            decision=decision
+        )
+        db.add(audit)
+        db.commit()
+
+        if decision == "DENY":
+            return "ACCESS DENIED: Policy violation. Request blocked by AgentGuard."
+        elif decision == "REQUIRE_APPROVAL":
+            return "PENDING APPROVAL: Operation requires human authorization."
+
+        # 3. Execute against protected SQLite CRM database
+        conn = sqlite3.connect("demo/mock_crm.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, email, status FROM customers WHERE name LIKE ? LIMIT ?", (f"%{query}%", limit))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        audit.execution_success = True
+        db.commit()
+        return str(rows)
+    except Exception as e:
+        db.rollback()
+        return f"Execution Error: {str(e)}"
+    finally:
+        db.close()
+
+```
+
+---
+
+## 5. Security Test Cases
+
+| Test ID | Scenario | Expected Behavior | Verification Method |
+| --- | --- | --- | --- |
+| **TC-01** | Valid agent invokes permitted search tool | `ALLOW` + Returns CRM records | Assert HTTP 200, execution success = True |
+| **TC-02** | Unauthenticated agent invokes tool | `DENY` + Fails auth | Assert HTTP 401 Unauthorized |
+| **TC-03** | Sales agent attempts `export_customer_records` | `DENY` (Hard rule violation) | Verify request never hits DB invocation count |
+| **TC-04** | Agent attempts SQL injection in search query | Sanitized or blocked by parameterization | Verify no raw SQL execution escape |
+| **TC-05** | Bulk request exceeding threshold (`limit=100`) | `REQUIRE_APPROVAL` | Verify status set to pending human review |
+
+---
+
+## 6. Overnight Execution Schedule (8-Hour Sprint)
+
+| Time Window | Objective | Key Deliverable |
+| --- | --- | --- |
+| **00:00 - 00:30** | Architecture & Contracts | Finalized database models and API schema specs |
+| **00:30 - 01:30** | Database & Mock CRM | SQLite schema with seed customer data (`mock_crm.db`) |
+| **01:30 - 03:00** | MCP Gateway Core | FastAPI backend with FastMCP server endpoints |
+| **03:00 - 04:00** | Policy & Risk Engine | Role-based evaluation & audit event logging |
+| **04:00 - 05:00** | Human Approval Flow | Approval queue endpoints & status state transitions |
+| **05:00 - 06:00** | Demo Client Integration | Connect sample OpenAI Agents SDK client to MCP gateway |
+| **06:00 - 07:00** | Render Workflow Hook | Asynchronous approval execution task |
+| **07:00 - 08:00** | Testing & Polish | Verify security test cases (TC-01 to TC-05) & record demo |
+
+---
+
+## 7. Demonstration Script for Hackathon Judges
+
+1. **Show the Problem:** Demonstrate an independent AI agent trying to access customer data. Normally, it would have direct DB access.
+2. **Connect to AgentGuard:** Point the agent to AgentGuard's MCP SSE Gateway URL.
+3. **Authorized Call:** Run a normal search (`search_customer_records`). Show that AgentGuard authenticates the agent, evaluates the policy as `ALLOW`, executes the query, and logs the audit event.
+4. **Unauthorized Call:** Trigger an unauthorized action (`export_customer_records`). Show that AgentGuard immediately returns `DENY`, and the database mock invocation counter remains unchanged (**proving blocked requests never reach the protected system**).
+5. **Policy Change:** Update the policy centrally in the backend database. Re-run the request and show the immediate enforcement change without restarting or modifying the agent code.

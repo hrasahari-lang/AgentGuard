@@ -1,0 +1,11 @@
+AGENTGUARD START HERE
+
+1. Extract this package into C:\Users\nunna\Desktop\GURDAI1.
+2. Open that folder in Antigravity.
+3. Read AGENTS.md and CURRENT_STATE.md.
+4. Paste ANTIGRAVITY_FIRST_PROMPT.md into Antigravity.
+5. Review ENVIRONMENT_REPORT.md before installing packages.
+
+If your Antigravity quota runs out, give another AI this entire folder, especially HANDOFF_TO_OTHER_AI.md and CURRENT_STATE.md.
+
+No backend application has been implemented yet. This is a portable project context + starter structure.
