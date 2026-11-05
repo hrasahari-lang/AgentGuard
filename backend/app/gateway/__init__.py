@@ -1,0 +1,1 @@
+"""MCP enforcement gateway."""

@@ -54,6 +54,10 @@ These rules are mandatory for the MVP. A feature is not complete if it violates 
 33. If an allowed call reaches the resource but fails, record invocation-started but not execution-succeeded.
 34. The counter test must instrument the actual repository/resource call, not a UI-only number.
 35. Show one central policy edit changing the next request's outcome without rebuilding the agent.
+36. Store only SHA-256 hashes of randomly generated gateway credentials; verify credentials before MCP parsing and support revocation.
+37. Derive trusted identity only from the active credential record; never accept identity or role from tool arguments.
+38. Persist the policy decision before an allowed CRM side effect. If this audit write fails, do not execute the CRM operation.
+39. Keep decision and execution status separate in persistent audit records; do not persist raw request values or credential material.
 
 ## Known boundary
 

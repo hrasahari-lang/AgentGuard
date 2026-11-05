@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 import math
 import re
+import threading
 import time
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -379,6 +380,7 @@ class PolicyEngine:
         load_defaults: bool = True
     ):
         self._rules: Dict[str, PolicyRule] = {}
+        self._lock = threading.RLock()
         if load_defaults:
             for rule in get_default_policies():
                 self.add_policy(rule)
@@ -390,38 +392,45 @@ class PolicyEngine:
         """Register or update a policy rule. Stores an independent deep copy."""
         if not isinstance(rule, PolicyRule):
             raise TypeError("rule must be an instance of PolicyRule")
-        self._rules[rule.policy_id] = copy.deepcopy(rule)
+        stored = copy.deepcopy(rule)
+        with self._lock:
+            self._rules[rule.policy_id] = stored
 
     def remove_policy(self, policy_id: str) -> bool:
         """Remove a policy rule by ID. Returns True if removed, False otherwise."""
-        return self._rules.pop(policy_id, None) is not None
+        with self._lock:
+            return self._rules.pop(policy_id, None) is not None
 
     def get_policy(self, policy_id: str) -> Optional[PolicyRule]:
         """Retrieve a policy rule by ID. Returns an independent deep copy."""
-        rule = self._rules.get(policy_id)
+        with self._lock:
+            rule = self._rules.get(policy_id)
         return copy.deepcopy(rule) if rule is not None else None
 
     def list_policies(self, enabled_only: bool = False) -> List[PolicyRule]:
         """Return all registered policy rules as independent deep copies."""
+        with self._lock:
+            rules = tuple(self._rules.values())
         if enabled_only:
-            return [copy.deepcopy(r) for r in self._rules.values() if r.enabled]
-        return [copy.deepcopy(r) for r in self._rules.values()]
+            return [copy.deepcopy(r) for r in rules if r.enabled]
+        return [copy.deepcopy(r) for r in rules]
 
     def set_policy_enabled(self, policy_id: str, enabled: bool) -> bool:
         """Enable or disable a specific policy rule dynamically."""
         if not isinstance(enabled, bool):
             raise TypeError("enabled must be a boolean")
-        rule = self._rules.get(policy_id)
-        if rule:
-            self._rules[policy_id] = replace(rule, enabled=enabled)
-            return True
-        return False
+        with self._lock:
+            rule = self._rules.get(policy_id)
+            if rule:
+                self._rules[policy_id] = replace(rule, enabled=enabled)
+                return True
+            return False
 
     def reset_to_defaults(self) -> None:
         """Reset policy engine to the default baseline policies."""
-        self._rules.clear()
-        for rule in get_default_policies():
-            self.add_policy(rule)
+        defaults = {rule.policy_id: copy.deepcopy(rule) for rule in get_default_policies()}
+        with self._lock:
+            self._rules = defaults
 
     def evaluate(self, request: PolicyEvaluationRequest) -> PolicyDecision:
         """Deterministically evaluate an incoming tool request against active policies.
@@ -514,8 +523,10 @@ class PolicyEngine:
         param_summary = _sanitize_parameters(params)
 
         # 2. Candidate Match Collection
+        with self._lock:
+            rules_snapshot = tuple(self._rules.values())
         candidates: List[PolicyRule] = []
-        for rule in self._rules.values():
+        for rule in rules_snapshot:
             if not rule.enabled:
                 continue
             if not self._matches_agent(rule, agent_id, is_admin):

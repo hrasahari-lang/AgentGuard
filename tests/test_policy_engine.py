@@ -16,6 +16,7 @@ Covers all Milestone 2 requirements:
 - Absence of protected tool execution during policy evaluation
 """
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 
 from backend.app.crm_repository import TrustedAgentContext
@@ -558,6 +559,36 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
             self.assertEqual(repeated.allowed, initial_decision.allowed)
             self.assertEqual(repeated.denied, initial_decision.denied)
             self.assertEqual(repeated.requires_approval, initial_decision.requires_approval)
+
+    def test_policy_registry_concurrent_evaluation_and_updates(self):
+        request = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            action="search",
+            resource="crm:customers",
+            parameters={"query": "Acme", "limit": 10},
+        )
+
+        def evaluate_many(_):
+            return [self.engine.evaluate(request).outcome for _ in range(80)]
+
+        def update_many(_):
+            for index in range(80):
+                self.engine.set_policy_enabled("POL-SALES-SEARCH-ALLOW", index % 2 == 0)
+                transient = PolicyRule(
+                    policy_id=f"TRANSIENT-{index}", name="Transient", description="concurrency test",
+                    outcome=PolicyOutcome.DENY, target_agents=["other_agent"],
+                    target_tools=["unrelated_tool"], target_resources=["other:resource"],
+                )
+                self.engine.add_policy(transient)
+                self.engine.remove_policy(transient.policy_id)
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(evaluate_many, index) for index in range(5)]
+            futures.append(pool.submit(update_many, 0))
+            results = [future.result() for future in futures]
+
+        self.assertTrue(all(outcome in {PolicyOutcome.ALLOW, PolicyOutcome.DENY} for group in results[:-1] for outcome in group))
 
     # 13. Audit serialization
     def test_decision_audit_serialization(self):

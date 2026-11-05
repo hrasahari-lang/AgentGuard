@@ -23,15 +23,15 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 |---|---|---|---|
 | **Milestone 0** | Environment & Workspace Verification | **COMPLETE** | Python 3.11, pip, Node.js, Git verified; workspace constrained to `C:\Users\nunna\Desktop\GURDAI1`; clean `.venv` created. |
 | **Milestone 1** | Database & Protected Synthetic CRM | **COMPLETE** | SQLite schema, idempotent seeding, RFC 2606 safe domains, parameterized SQL queries, server-side resource scoping, atomic pre-committed invocation counters, WAL mode, 15s timeout, 11/11 unit tests passing. |
-| **Milestone 2** | Deterministic Policy Engine (without MCP) | **FINAL SECURITY REMEDIATION VERIFIED** | Pure deterministic rule engine, explicit outcomes, trusted context requirement, deterministic precedence, default deny, no CRM execution during evaluation. Final remediation validates action/resource syntax and all condition schemas; recursively freezes rule targets/conditions; detaches serialized audit summaries; redacts labeled inline secrets; precise exception assertions. 24 policy tests; 35 total tests (final full-suite result recorded in `CURRENT_STATE.md`). |
-| **Milestone 3** | MCP Streamable HTTP Gateway | **PENDING** | Official MCP Python SDK v2, HTTP Bearer token authentication boundary, session identity mapping, tool registration, protected credential isolation. |
-| **Milestone 4** | Controlled Execution & Audit Engine | **PENDING** | Single executor routing, audit logging, separate decision vs. execution recording, failure recording without rolling back decision logs. |
-| **Milestone 5** | External Agent Integration | **PENDING** | Standalone agent client connecting over MCP Streamable HTTP, discovering tools and executing governed operations. |
+| **Milestone 2** | Deterministic Policy Engine (without MCP) | **FINAL SECURITY REMEDIATION VERIFIED** | Pure deterministic rule engine, explicit outcomes, trusted context requirement, deterministic precedence, default deny, no CRM execution during evaluation. Final remediation validates action/resource syntax and all condition schemas; recursively freezes rule targets/conditions; detaches serialized audit summaries; redacts labeled inline secrets; precise exception assertions. 25 policy tests; 45 total tests in latest full suite (recorded in `CURRENT_STATE.md`). |
+| **Milestone 3** | MCP Streamable HTTP Gateway | **COMPLETE (local prototype)** | `mcp==2.3.0`, Streamable HTTP app, pre-routing bearer validation, hash-only credential registry, revocation/rotation, server-derived trusted context, three tools, HTTP integration evidence. |
+| **Milestone 4** | Controlled Execution & Audit Engine | **COMPLETE (local prototype)** | Shared policy executor and persistent SQLite audit; decision persisted before execution, execution outcome separate, audit-write failure prevents CRM access. Full suite: 45 tests passing. |
+| **Milestone 5** | External Agent Integration | **COMPLETE (SDK demo)** | Separate official-SDK MCP client discovers tools and demonstrates allowed search plus denied export; subprocess test passed. Broader agent framework integrations remain future work. |
 | **Milestone 6** | Dynamic Policies & Human Approvals | **PENDING** | Admin policy API, one-time approval tokens, replay protection, cryptographic request hash binding, revalidation before execution. |
-| **Milestone 7** | Enterprise Admin UI & Polish | **PENDING** | Professional React + TypeScript interface, live backend telemetry, metrics tied to persistent backend data, demo scripts. |
+| **Milestone 7** | Enterprise Admin UI & Polish | **LOCAL MVP COMPLETE** | React + TypeScript read-only dashboard uses authenticated live backend APIs for telemetry, agents, policies, and audit. Production deployment/polish remain pending. |
 | **Milestone 8** | Render Workflows & Public Deployment | **PENDING** | Render Web Services (FastAPI + MCP gateway), Render Static Sites (React frontend), Render PostgreSQL, Render Workflows integration. |
 
-**Overall Progress:** 3 / 9 Milestones Complete (~33% based on verified acceptance criteria).
+**Overall Progress:** M0–M5 complete for the verified local prototype; M6 and M8 pending. M7 local dashboard MVP is implemented and production work remains.
 
 ---
 
@@ -86,8 +86,8 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
   - M2-M-04: Recursive parameter sanitization protects against nested credential leaks in audit logs.
   - M2-L-02: Target list items validated as strings at rule construction time.
 - [x] **Test Verification:**
-  - 24 automated unit tests in `tests/test_policy_engine.py`, including final M2 remediation regressions.
-  - Total test suite: 35 tests; final full-suite evidence is recorded in `CURRENT_STATE.md`.
+  - 25 automated unit tests in `tests/test_policy_engine.py`, including final M2 remediation regressions and concurrent registry updates.
+  - Total test suite: 45 tests; latest full-suite evidence is recorded in `CURRENT_STATE.md`.
 
 - [x] **Final M2 Security Review Findings:**
   - Malformed action/resource identifiers and non-dictionary parameters fail closed.

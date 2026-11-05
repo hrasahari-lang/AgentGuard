@@ -5,7 +5,7 @@ These decisions are the current baseline. Reopen them only when a concrete techn
 1. **Product identity:** BYOA governance gateway, not an agent-builder platform.
 2. **Universal vision:** Long-term objective; initial honest claim is compatible MCP agents routed through AgentGuard.
 3. **First integration:** MCP Streamable HTTP. Do not start a new implementation on legacy SSE.
-4. **SDK:** Current official MCP Python SDK v2 is stable. Release page showed v2.3.0 as latest on 2026-11-05; v1 is maintenance-only. Verify package version before pinning and use v2 APIs. Do not copy `FastMCP` v1 examples blindly; v2 names the server `MCPServer` and moved transport options.
+4. **SDK:** Pin the official MCP Python SDK at `mcp==2.3.0` (verified against the official release page on 2026-11-06). Use v2 `MCPServer` and Streamable HTTP APIs; do not copy `FastMCP` v1 examples or select legacy SSE.
 5. **Authentication:** Verified HTTP bearer token / authenticated principal. Never accept `agent_id` or `role` from tool arguments.
 6. **Demo agents:** One independently implemented MCP-compatible agent first. A second framework is a stretch interoperability proof, not a core requirement.
 7. **Protected data:** Synthetic SQLite CRM locally; PostgreSQL for hosted deployment if persistent multi-service state is needed.
@@ -21,6 +21,8 @@ These decisions are the current baseline. Reopen them only when a concrete techn
 16. **M2 final request validation:** Normalize only non-empty action/resource identifiers matching the bounded lowercase identifier grammar after case folding; malformed values and wildcard request identifiers fail closed. Policy condition keys and value types are validated when `PolicyRule` is created.
 17. **M2 policy immutability:** Freeze target lists as tuples and recursively freeze condition mappings/sequences so a frozen dataclass cannot be altered through nested containers. Keep the existing copy-on-ingress/read boundary.
 18. **M2 audit summaries:** `PolicyDecision.to_dict()` returns a deep copy of its summary. Sanitization removes sensitive-key fields and masks common inline credential assignments and bearer tokens; arbitrary unlabeled strings cannot be reliably classified as secrets.
+19. **M3 prototype authentication:** Use opaque, randomly generated bearer credentials provisioned from a trusted local CLI, store only SHA-256 hashes, compare hashes in constant time, and support rotation/revocation. This registry middleware protects the HTTP/MCP boundary but is not an OAuth authorization server or enterprise SSO.
+20. **M3 audit and concurrency:** Persist the policy decision before protected execution, record execution status separately, omit request values from the audit database, and protect dynamic policy registry reads/writes with a lock.
 
 ## User environment and preferences
 

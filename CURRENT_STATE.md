@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** Milestone 2 Final Security Remediation — Verified
+**Stage:** M3/M4/M5 local vertical slice and read-only dashboard MVP — verified locally
 
 ---
 
@@ -26,33 +26,45 @@
 - Final M2 remediation addressed malformed action/resource normalization, policy condition schema validation, nested rule mutability, detached audit serialization, inline secret redaction, and precise exception assertions.
 - M2 regression tests now cover malformed request identifiers, invalid condition schemas, nested immutable policy data, detached summaries, and labeled inline credentials.
 - Full-suite verification for this remediation: `.\\.venv\\Scripts\\python.exe -B -m unittest discover -s tests -v` — **35 tests passed in 0.551s**.
+- M3/M4 implementation adds the pinned MCP SDK 2.3.0 Streamable HTTP gateway, hashed/revocable credentials, pre-routing bearer auth, scoped CRM tools, persistent decision/execution audit, and fail-closed handling.
+- A separate MCP client demo and HTTP tests exercise discovery, ALLOW, DENY, REQUIRE_APPROVAL, identity spoof attempts, token rejection/rotation/revocation, audit failures, and execution failures.
+- An admin-authenticated read-only React + TypeScript dashboard loads real overview counts, agents, policies, and audit rows from backend APIs. No metrics are simulated. The admin token is held in browser memory only.
+- The M3/M4/M5 backend and local dashboard milestone changes are implemented and verified. This remains a local prototype: authentication is a local bearer-token registry, not OAuth; approval handling, dynamic policy editing, production deployment, and Render Workflows remain outstanding.
 
 ---
 
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Branch `main`, M2 final security remediation committed as `bca98b0`; pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
+- **Git status:** Branch `main`; base HEAD `d56fb53` includes remote commit `85eca75` via a merge preserving both histories. Milestone implementation changes are pending local checkpoint. Pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched and must not be included in the checkpoint.
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
 - **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
-- **Python environment:** Python 3.11.1 standard library (zero third-party package dependencies across M1 and M2).
+- **Python environment:** Python 3.11; `mcp==2.3.0` and HTTP runtime dependencies installed in `.venv` and pinned directly in `requirements.txt` for the gateway. Tests use standard-library `unittest`.
+- **Frontend environment:** Node 24/npm 11; React 19.3.1, Vite 8.3.6, TypeScript 7.0.2. `npm run build` succeeds.
 
 ---
 
-## 3. Files Modified in this Remediation
+## 3. M3/M4/M5 Files Added or Modified
 
-- `backend/app/policy_engine.py` (Added strict action/resource validation, comprehensive condition schema validation, immutable nested rule data, copied audit output, and inline secret redaction)
-- `tests/test_policy_engine.py` (Added four regression tests and tightened exception assertions)
-- `GOALS_AND_PROGRESS.md` (Updated verified criteria and test counts)
-- `DECISIONS.md` (Recorded the M2 validation and immutability choices)
-- `CURRENT_STATE.md` (Updated)
+- `backend/app/policy_engine.py` (M2 hardening plus thread-safe policy registry reads and writes)
+- `backend/app/security/auth.py` (hashed credential issuance, rotation, revocation, verification and ASGI middleware)
+- `backend/app/audit/audit_store.py` (persistent policy and execution audit)
+- `backend/app/gateway/mcp_server.py` (MCP tools and governed execution)
+- `backend/app/provision_agent.py`, `backend/app/run_gateway.py`, `requirements.txt`
+- `demo/external_agent.py`, `tests/test_gateway.py`, concurrency and integration coverage
+- Root README, backend setup, security and architecture docs
 
 ---
 
 ## 4. Actual Test Results
 
 Command: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v`
-Result: **Ran 35 tests in 0.551s — OK (all passed).**
+Latest result: **Ran 45 tests in 5.319s — OK (all passed).** This includes the 11 M1 CRM tests, M2 policy regression tests and M3/M4 HTTP gateway/API tests.
+
+Frontend build: `npm run build` from `frontend/` — **exit code 0**, TypeScript check and Vite production bundle succeeded.
+
+Compilation: `.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — **exit code 0** after implementation and docs update.
+Diff Check: `git diff --check` — **exit code 0** after implementation and docs update.
 
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
@@ -67,7 +79,7 @@ Result: **Ran 35 tests in 0.551s — OK (all passed).**
 10. `test_synthetic_data_seeding` — ok
 11. `test_wal_mode_and_connection_settings` — ok
 
-**Milestone 2 Tests (24 passed):**
+**Milestone 2 Policy Tests (25 passed in the latest full suite):**
 12. `test_agent_identity_isolation` — ok
 13. `test_conflicting_policies_and_precedence` — ok
 14. `test_decision_audit_serialization` — ok
@@ -100,10 +112,12 @@ Diff Check: `git diff --check` — Exit Code `0`.
 
 ## 5. Current Known Errors / Blockers
 
-No M2 test failures remain. The existing untracked `M2_FINAL_SECURITY_REVIEW.md` was present before this work and remains untouched. Thread safety and trusted-context construction boundary remain deferred to M3 as recorded in the independent review.
+M3 uses prototype registry authentication, not OAuth/SSO. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain unimplemented. `gh auth status` reports no authenticated GitHub host; therefore account identity and write permission cannot be verified, and no push is safe or was attempted. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
 
 ---
 
 ## 6. Next Exact Task
 
-1. Await user instructions before Milestone 3 (MCP Streamable HTTP Gateway).
+1. Commit the verified local M3/M4/M5 and read-only dashboard milestone, excluding the pre-existing independent review file.
+2. Run the documented local backend + dashboard demo from a clean setup.
+3. Continue with human approval/replay protection; do not begin deployment until asked and production auth/database are resolved.

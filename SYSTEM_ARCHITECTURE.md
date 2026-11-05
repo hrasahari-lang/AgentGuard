@@ -77,11 +77,11 @@ Return result to agent
 
 ## 4. Authentication approach
 
-For deployed MCP over Streamable HTTP, follow the current MCP authorization specification and official Python SDK authorization guidance. The MCP server acts as a resource server and verifies bearer tokens. The authorization server/token issuance story must be explicit.
+The gateway uses the official MCP Python SDK v2 Streamable HTTP app behind an ASGI bearer-authentication middleware. Every HTTP request is authenticated before MCP routing. The initial hackathon implementation uses a local credential registry as a constrained prototype, not OAuth or enterprise SSO; credentials are provisioned by a trusted local CLI, and only SHA-256 token hashes are stored. Remote clients must be configured with a bearer token out of band. Do not describe this as an OAuth authorization server.
 
-For a constrained hackathon prototype, a small registry-backed bearer-token verifier can be used if it is integrated correctly with the MCP HTTP boundary and clearly documented as prototype authentication, not full enterprise OAuth/SSO. Never place the token in tool arguments.
+`AgentAuthenticationMiddleware` verifies the credential against the active registry using constant-time hash comparison, then derives `TrustedAgentContext` from the stored `agent_id` and admin flag. A request-scoped `ContextVar` carries that context to handlers. Tool schemas contain no identity or role fields. A credential can be revoked in the registry; raw token material is printed only once by the provisioning command.
 
-The MCP SDK's in-memory client and stdio transport do not exercise HTTP bearer-token authentication. Security tests for authentication must use the HTTP transport or separately test the verifier boundary.
+The MCP SDK's in-memory client and stdio transport do not exercise this HTTP middleware. Gateway security tests start a local ASGI server and use the SDK's Streamable HTTP client with bearer headers.
 
 ## 5. Tool execution design
 
@@ -92,6 +92,7 @@ The MCP SDK's in-memory client and stdio transport do not exercise HTTP bearer-t
 - Use parameterized SQL / ORM queries.
 - Enforce resource scope in the actual query, not only in a policy pre-check.
 - Register sensitive tools even when policy denies them; otherwise a client-side unknown-tool error would not prove AgentGuard denied a known tool call.
+- Current registered tools are `search_customer_records`, `get_customer`, and `export_customer_records`; all execute only after an `ALLOW` and a persisted audit decision.
 
 ## 6. Audit lifecycle
 
@@ -104,7 +105,7 @@ Audit records should distinguish:
 - execution started;
 - execution succeeded or failed.
 
-At minimum, persist the decision before executing a protected side effect. On completion, append or update a correlated execution outcome. If the audit write needed to establish the decision fails, fail closed before execution.
+At minimum, persist the decision before executing a protected side effect. On completion, update the correlated execution outcome as `SUCCEEDED` or `FAILED`, recording only the exception type on failure. Denials and approval-pending requests are persisted without touching CRM. The initial audit schema stores identity, tool/action/resource, decision, policy ID, execution status, safe error type and timestamp; it omits request values. If the audit write needed to establish the decision fails, fail closed before execution.
 
 For the MVP, an append-only application API is acceptable, but do not claim tamper-proof or non-repudiable logging unless a suitable integrity and access-control design is implemented. A hash chain is an optional tamper-evidence improvement, not a substitute for secure access control.
 
@@ -190,6 +191,6 @@ AgentGuard/
 
 ## 11. Current MCP SDK decision
 
-As checked on 2026-11-05, the official Python MCP SDK v2 is the current stable line; the repository release page lists v2.3.0 as latest, while v1 is maintenance-only. The v2 API has breaking changes: `FastMCP` becomes `MCPServer`, and transport options move to `run()` / app methods. Do not copy older v1 snippets without adapting them. Pin a tested v2 version in the project after checking local Python compatibility.
+As checked on 2026-11-06, the official Python MCP SDK v2 release page lists v2.3.0 as latest. The project pins `mcp==2.3.0`. The v2 API has breaking changes: `FastMCP` becomes `MCPServer`, and transport options move to `run()` / app methods. The gateway uses `MCPServer` and `streamable_http_app()`; it does not copy v1 `FastMCP` or SSE examples.
 
-Use Streamable HTTP for deployed gateway work. SSE is the older transport and should not be selected for a new implementation.
+Use Streamable HTTP for gateway work. SSE is the older transport and should not be selected for a new implementation. The local prototype binds to `127.0.0.1`; public-host transport security and a real OAuth provider remain deployment prerequisites.
