@@ -23,7 +23,7 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 |---|---|---|---|
 | **Milestone 0** | Environment & Workspace Verification | **COMPLETE** | Python 3.11, pip, Node.js, Git verified; workspace constrained to `C:\Users\nunna\Desktop\GURDAI1`; clean `.venv` created. |
 | **Milestone 1** | Database & Protected Synthetic CRM | **COMPLETE** | SQLite schema, idempotent seeding, RFC 2606 safe domains, parameterized SQL queries, server-side resource scoping, atomic pre-committed invocation counters, WAL mode, 15s timeout, 11/11 unit tests passing. |
-| **Milestone 2** | Deterministic Policy Engine (without MCP) | **PENDING** | Next milestone: Typed request models, identity-aware policies, ALLOW / REQUIRE_APPROVAL / DENY, deterministic constraints, fail-closed default. |
+| **Milestone 2** | Deterministic Policy Engine (without MCP) | **COMPLETE** | Pure deterministic rule engine, explicit outcomes (ALLOW, REQUIRE_APPROVAL, DENY), verified `TrustedAgentContext` requirement, tool argument spoofing resistance, deterministic precedence, fail-closed default, zero CRM execution during evaluation, 14 new unit tests (25/25 total suite passing). |
 | **Milestone 3** | MCP Streamable HTTP Gateway | **PENDING** | Official MCP Python SDK v2, HTTP Bearer token authentication boundary, session identity mapping, tool registration, protected credential isolation. |
 | **Milestone 4** | Controlled Execution & Audit Engine | **PENDING** | Single executor routing, audit logging, separate decision vs. execution recording, failure recording without rolling back decision logs. |
 | **Milestone 5** | External Agent Integration | **PENDING** | Standalone agent client connecting over MCP Streamable HTTP, discovering tools and executing governed operations. |
@@ -31,50 +31,61 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 | **Milestone 7** | Enterprise Admin UI & Polish | **PENDING** | Professional React + TypeScript interface, live backend telemetry, metrics tied to persistent backend data, demo scripts. |
 | **Milestone 8** | Render Workflows & Public Deployment | **PENDING** | Render Web Services (FastAPI + MCP gateway), Render Static Sites (React frontend), Render PostgreSQL, Render Workflows integration. |
 
-**Overall Progress:** 2 / 9 Milestones Complete (~22% based on verified acceptance criteria).
+**Overall Progress:** 3 / 9 Milestones Complete (~33% based on verified acceptance criteria).
 
 ---
 
 ## 3. Milestone 1 Verified Acceptance Criteria
 
 - [x] **Reproducible Schema & Data Seeding:**
-  - `customers` table with `customer_id`, `name`, `email`, `status`, `assigned_agent_id`.
-  - `resource_invocation_counter` table with `id`, `resource_name`, `total_invocations`, `successful_invocations`.
-  - 7 synthetic customer records loaded across 3 agents using RFC 2606 reserved `.example.com` domains.
-  - Idempotent re-initialization confirmed (`init_db()` preserves data and counter rows without duplicates).
+  - `customers` and `resource_invocation_counter` tables created with parameterized initial state.
+  - 7 synthetic customer records loaded across 3 agents using RFC 2606 `.example.com` domains.
+  - Idempotent re-initialization confirmed (`init_db()` preserves data without duplicates).
 - [x] **Zero SQL Injection Vulnerabilities:**
   - 100% parameterized queries using `?` placeholders across all repository functions.
-  - Payloads tested: malicious OR conditions, DROP TABLE attempts, UNION SELECT injection.
 - [x] **Server-Side Resource Scoping:**
   - Agent-specific filtering enforced inside SQL (`WHERE customer_id = ? AND assigned_agent_id = ?`).
-  - Standard agents cannot view, search, or export records belonging to other agents.
-  - Admin agent maintains cross-agent visibility.
 - [x] **Strict Pre-Execution Validation:**
   - `isinstance(agent_context, TrustedAgentContext)` enforced on all protected methods.
-  - Untrusted contexts or missing arguments raise `TypeError` prior to repository execution.
-  - Search limits bounded to `1 <= limit <= 100`; export limits bounded to `1 <= limit <= 1000`.
-  - Booleans rejected for integer limit parameters.
-  - Export format restricted to whitelist `("json", "csv")`.
 - [x] **Persistent Invocation Counters:**
-  - `total_invocations` committed immediately in a dedicated connection before running queries.
-  - Failed queries (e.g. dropped tables) retain `total_invocations` increment while `successful_invocations` remains unincremented.
-  - Validation failures do not increment counters.
+  - `total_invocations` committed immediately before running queries; persists through query failures.
 - [x] **Database Concurrency & Reliability Hardening:**
-  - WAL (Write-Ahead Logging) journal mode enabled on file-backed databases (`PRAGMA journal_mode = WAL;`).
-  - In-memory databases (`:memory:`) skip WAL activation.
-  - 15-second busy timeout set on SQLite connections.
+  - WAL journal mode on file databases; 15-second busy timeout.
 - [x] **Test Verification:**
   - 11 automated unit tests in `tests/test_crm_repository.py` passing in ~0.6s.
-  - Clean bytecode compilation with `python -m compileall`.
 
 ---
 
-## 4. Next Milestone Scope: Milestone 2
+## 4. Milestone 2 Verified Acceptance Criteria
 
-**Target:** Deterministic Policy Engine (Without MCP)
-1. Typed request context and tool execution request models (`dataclass` or `pydantic`).
-2. Policy rule definitions mapping agent identities and scopes to tools and constraints.
-3. Decision outcomes: `ALLOW`, `REQUIRE_APPROVAL`, `DENY`.
-4. Deterministic condition evaluation (scope match, argument constraints, rate/record bounds).
-5. Default to `DENY` when no explicit matching policy exists (fail-closed security).
-6. Comprehensive unit test suite covering allow, deny, approval, scope violations, and missing policies.
+- [x] **Deterministic Outcomes:**
+  - Explicit distinction between `ALLOW`, `REQUIRE_APPROVAL`, and `DENY`.
+  - No LLM in authorization loop; zero fuzzy logic or unexplainable heuristics.
+- [x] **Server-Side Identity Verification & Anti-Spoofing:**
+  - Agent identity and administrative status derived strictly from `TrustedAgentContext`.
+  - Tool arguments (e.g. `parameters={"agent_id": "admin", "is_admin": True}`) are completely ignored for authorization.
+  - Missing or untrusted contexts fail closed to `DENY` with `CRITICAL` risk level.
+- [x] **Deterministic Precedence Hierarchy:**
+  1. Priority integer ascending (lower integer = higher precedence).
+  2. Deny-overrides on collision: `DENY` > `REQUIRE_APPROVAL` > `ALLOW`.
+  3. Specificity on collision: Specific agent > wildcard agent, Specific tool > wildcard tool.
+  4. Lexical sort on `policy_id` as stable tie-breaker.
+- [x] **Fail-Closed Default:**
+  - Requests matching no policy return `DENY` with `policy_id=None` and explainable reason.
+- [x] **Decoupled Architecture:**
+  - Policy evaluation never touches the database or CRM counters (`test_no_protected_crm_execution_during_policy_evaluation` verifies counter remains 0).
+- [x] **Audit-Ready Serialization:**
+  - `PolicyDecision.to_dict()` outputs structured audit dictionaries with sensitive keys redacted.
+- [x] **Test Verification:**
+  - 14 automated unit tests in `tests/test_policy_engine.py` covering all 12 test specifications.
+  - Total test suite: 25 tests passing in 0.624s.
+
+---
+
+## 5. Next Milestone Scope: Milestone 3
+
+**Target:** MCP Streamable HTTP Gateway
+1. Implement official MCP Python SDK v2 server with Streamable HTTP transport.
+2. Bearer token authentication boundary verifying cryptographic token hashes.
+3. Establish session-level `TrustedAgentContext` without accepting identity from MCP tool arguments.
+4. Tool registration for permitted and restricted tools, enabling AgentGuard to return denial responses.

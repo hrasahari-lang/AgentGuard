@@ -1,96 +1,106 @@
 # AgentGuard — Current State
 
-**Last updated:** 2026-11-06  
-**Stage:** Milestone 1 Complete & Hardened — Database and Protected CRM Implementation  
+**Last updated:** 2026-11-06
+**Stage:** Milestone 2 Complete — Deterministic Policy Engine (without MCP integration)
 
 ---
 
 ## 1. Product Status
 
-- Original 12-slide AgentGuard pitch deck reviewed.
-- Two-page AgentGuard Technical Framework reviewed.
-- Independent AI technical review reviewed.
-- BYOA vision retained: zero-trust gateway for compatible AI agents over MCP Streamable HTTP.
-- Milestone 1 implemented, reviewed, and hardened: Real SQLite-backed synthetic CRM with parameterized queries, server-side resource scoping, trusted agent context requirements, persistent entry/success invocation counters, WAL journal mode, 15-second busy timeout, and comprehensive automated test suite.
+- BYOA governance gateway for compatible AI agents over MCP Streamable HTTP.
+- Milestone 1 complete & hardened: SQLite synthetic CRM, parameterized queries, server-side resource scoping, persistent entry/success invocation counters, WAL journal mode, 15-second busy timeout.
+- Milestone 2 complete: Deterministic policy evaluation engine (`backend/app/policy_engine.py`) implementing:
+  - Three distinct outcomes: `ALLOW`, `REQUIRE_APPROVAL`, `DENY`.
+  - Zero-trust identity enforcement using server-side `TrustedAgentContext` (tool argument spoofing rejected).
+  - Deterministic precedence: priority integer -> deny-overrides -> specificity -> lexical tie-break.
+  - Fail-closed security for unmatched, malformed, or untrusted requests.
+  - Total decoupling from CRM tool execution (zero CRM queries or counter increments during evaluation).
+  - 14 automated policy tests added; 25/25 total test suite passing.
 
 ---
 
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Initialized, branch renamed from `master` to `main`.
+- **Git status:** Branch `main`, committed Milestone 1 (`71fb8a2`).
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
-- **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*` (except `.env.example`).
-- **Python environment:** Python 3.11.1 standard library (zero third-party package dependencies for Milestone 1).
+- **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
+- **Python environment:** Python 3.11.1 standard library (zero third-party package dependencies across M1 and M2).
 
 ---
 
-## 3. Milestone 1 Hardening & Fixes Applied
+## 3. Milestone 2 Implementation Summary
 
-In accordance with the independent security review (`MILESTONE_1_REVIEW.md`), the following fixes were applied and verified:
-1. **Removed Default Arguments from Required Contexts:**  
-   In `backend/app/crm_repository.py`, `search_customer_records` and `export_customer_records` signatures were updated to require `agent_context: TrustedAgentContext` without `= None`, eliminating type-hint ambiguity while preserving runtime type validation (`isinstance`).
-2. **Database Concurrency & Busy Timeout:**  
-   Configured 15-second busy timeout (`sqlite3.connect(..., timeout=15.0)`) across database and repository connections.
-3. **WAL Journal Mode for File-Backed Databases:**  
-   Enabled Write-Ahead Logging (`PRAGMA journal_mode = WAL;`) for file-backed SQLite databases in `get_connection()` and repository connection helpers, while explicitly skipping WAL activation for in-memory databases (`:memory:`).
-4. **Committed Invocation Counters Preserved:**  
-   Maintained dedicated transaction commits in `record_invocation()` to guarantee counter persistence prior to protected operations, surviving query and downstream failures.
-5. **Documented SQL LIKE Wildcard Semantics:**  
-   Explicitly documented in `search_customer_records` docstrings that `%` and `_` behave as standard SQL LIKE pattern wildcards, constrained entirely within the agent's assigned records via `AND assigned_agent_id = ?`.
-6. **Auxiliary Database File Ignoring:**  
-   Updated `.gitignore` with `*.db-wal`, `*.db-shm`, `*.sqlite-wal`, `*.sqlite-shm`, `*.sqlite3-wal`, and `*.sqlite3-shm`.
-7. **Connection Churn Refactoring Deferred:**  
-   Connection-churn optimization deferred to Milestone 3 gateway integration to maintain simple, fail-safe isolation for now.
+### New Components:
+- **Policy Engine Module (`backend/app/policy_engine.py`):**
+  - `PolicyOutcome`: Enum (`ALLOW`, `REQUIRE_APPROVAL`, `DENY`).
+  - `RiskLevel`: Enum (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+  - `PolicyEvaluationRequest`: Frozen dataclass capturing agent context, tool name, action, resource, parameters, and client request ID.
+  - `PolicyDecision`: Structured, immutable authorization decision with `.to_dict()` audit serialization.
+  - `PolicyRule`: Validated policy rule with priority, targets, conditions, and risk level.
+  - `PolicyEngine`: Registry with dynamic add/remove/get/list/enable/disable and deterministic `evaluate()` algorithm.
+  - Baseline default policies: Admin full access, sales search allow (<= 50), sales search approval (51-100), sales lookup allow, sales export approval (<= 100), sales bulk export deny (> 100), dangerous tools deny.
+- **Automated Test Suite (`tests/test_policy_engine.py`):**
+  - 14 tests covering explicit allow/deny/approval, fail-closed defaults, precedence, disabled rules, identity isolation & spoofing resistance, resource scoping, unknown tools, untrusted contexts, malformed rule definitions, repeated determinism, audit serialization, and decoupling proof.
 
 ---
 
 ## 4. Files Created or Modified
 
-- `backend/app/config.py` (Created)
-- `backend/app/database.py` (Created, updated with WAL & 15s timeout & in-memory detection)
-- `backend/app/crm_repository.py` (Created, updated with hardened signatures, WAL, 15s timeout, wildcard docs)
-- `backend/app/__init__.py` (Created)
-- `tests/__init__.py` (Created)
-- `tests/test_crm_repository.py` (Created, updated with WAL tests, untrusted context checks, wildcard tests)
-- `.gitignore` (Updated with WAL auxiliary file patterns)
+- `backend/app/policy_engine.py` (Created)
+- `tests/test_policy_engine.py` (Created)
+- `GOALS_AND_PROGRESS.md` (Updated)
 - `CURRENT_STATE.md` (Updated)
-- `GOALS_AND_PROGRESS.md` (Created)
-- `MILESTONE_1_REVIEW.md` (Updated with fix resolutions)
 
 ---
 
 ## 5. Actual Test Results
 
 Command: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`  
-Result: **Ran 11 tests in 0.605s — OK (All 11 tests passed)**
+Result: **Ran 25 tests in 0.624s — OK (All 25 tests passed)**
 
-1. `test_agent_specific_record_access` — ok (agents cannot view/search/export other agents' records; admin can access all)
-2. `test_counter_persistence_on_failure` — ok (`total_invocations` preserved on query failure, `successful_invocations` not incremented)
-3. `test_customer_search` — ok (searches across name, email, customer_id; verifies LIKE wildcard scoping)
-4. `test_database_initialization` — ok (tables & columns verified)
-5. `test_invocation_counter_increments` — ok (entry & success incremented; pre-validation & untrusted context do not increment)
-6. `test_missing_customer_handling` — ok (lookup of non-existent customer returns `None`)
-7. `test_record_limits` — ok (bounds checking, rejects non-integers, booleans, out-of-range values)
-8. `test_sql_injection_resistance` — ok (malicious SQL payloads treated strictly as text literals)
-9. `test_successful_customer_lookup` — ok (accurate dictionary record retrieval)
-10. `test_synthetic_data_seeding` — ok (7 synthetic records, `.example.com` domains, idempotent re-run)
-11. `test_wal_mode_and_connection_settings` — ok (verifies WAL active on file-backed DB, skipped on in-memory DB)
+**Milestone 1 Tests (11 passed):**
+1. `test_agent_specific_record_access` — ok
+2. `test_counter_persistence_on_failure` — ok
+3. `test_customer_search` — ok
+4. `test_database_initialization` — ok
+5. `test_invocation_counter_increments` — ok
+6. `test_missing_customer_handling` — ok
+7. `test_record_limits` — ok
+8. `test_sql_injection_resistance` — ok
+9. `test_successful_customer_lookup` — ok
+10. `test_synthetic_data_seeding` — ok
+11. `test_wal_mode_and_connection_settings` — ok
 
-Compilation: `.\.venv\Scripts\python.exe -m compileall -q backend tests` — Exit Code `0` (clean).  
-Diff Check: `git diff --check` — Exit Code `0` (clean).  
-Ignore Check: `.venv`, `.env`, `crm.db`, `crm.db-wal`, `crm.db-shm`, `__pycache__` — all verified ignored.
+**Milestone 2 Tests (14 passed):**
+12. `test_agent_identity_isolation` — ok (verifies agent cannot access other agents' rules or spoof identity via parameters)
+13. `test_conflicting_policies_and_precedence` — ok (verifies priority, deny-overrides, specificity, and lexical tie-break)
+14. `test_decision_audit_serialization` — ok (verifies structured audit dictionary and secret redaction)
+15. `test_deterministic_repeated_evaluation` — ok (100 iterations yield identical decisions)
+16. `test_disabled_policies` — ok (disabled rules ignored; dynamic enable/disable verified)
+17. `test_explicit_allow` — ok (search <= 50, lookup, admin full access)
+18. `test_explicit_deny` — ok (dangerous tools, bulk export > 100)
+19. `test_malformed_policy_definitions` — ok (validation rejects empty IDs, invalid outcomes, invalid priority types)
+20. `test_missing_or_untrusted_agent_context` — ok (None, string, dict contexts fail closed to DENY with CRITICAL risk)
+21. `test_no_matching_policy` — ok (unregistered agent or unknown tool fails closed to DENY)
+22. `test_no_protected_crm_execution_during_policy_evaluation` — ok (verifies CRM invocation counter remains exactly 0)
+23. `test_require_approval` — ok (bulk search 51-100, sensitive export <= 100)
+24. `test_resource_level_restrictions` — ok (mismatched resource scopes fail closed)
+25. `test_unknown_tools_and_actions` — ok (unconfigured actions fail closed without unhandled errors)
+
+Compilation: `.\.venv\Scripts\python.exe -m compileall -q backend tests` — Exit Code `0`.
+Diff Check: `git diff --check` — Exit Code `0`.
 
 ---
 
 ## 6. Current Known Errors / Blockers
 
-None. All Milestone 1 requirements and hardening fixes are implemented, tested, and verified.
+None. Milestone 2 is complete and verified.
 
 ---
 
 ## 7. Next Exact Task
 
-1. Stage verified Milestone 1 files (excluding databases, virtual environments, caches, secrets).
-2. Commit locally with message: `feat: complete protected CRM milestone`.
-3. Proceed to Milestone 2 (Deterministic Policy Engine without MCP) upon user confirmation.
+1. Stage verified Milestone 2 files.
+2. Commit locally with message: `feat: add deterministic policy engine`.
+3. Await user instructions to proceed to Milestone 3 (MCP Streamable HTTP Gateway).
