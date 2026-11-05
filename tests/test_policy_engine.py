@@ -632,6 +632,312 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
                 "Security violation: Policy engine invoked protected CRM operations or touched counters!"
             )
 
+    # 15. Regression: M2-H-01 Immutable Policy Rules & Defensive Copies
+    def test_finding_m2_h01_immutable_policy_rules_and_defensive_copies(self):
+        """M2-H-01: Verify PolicyRule is frozen and engine returns independent deep copies."""
+        rule = self.engine.get_policy("POL-SALES-SEARCH-ALLOW")
+        self.assertIsNotNone(rule)
+
+        # 1. Direct mutation of frozen PolicyRule raises FrozenInstanceError (AttributeError)
+        with self.assertRaises((AttributeError, Exception)):
+            rule.outcome = PolicyOutcome.DENY  # type: ignore
+
+        with self.assertRaises((AttributeError, Exception)):
+            rule.enabled = False  # type: ignore
+
+        # 2. Mutating inner mutable containers on retrieved copy does not affect engine
+        rule.target_agents.append("malicious_agent_override")
+        rule.conditions["max_limit"] = 999999
+
+        # Re-fetch from engine: internal rule remains unmodified
+        fresh_rule = self.engine.get_policy("POL-SALES-SEARCH-ALLOW")
+        self.assertNotIn("malicious_agent_override", fresh_rule.target_agents)
+        self.assertEqual(fresh_rule.conditions.get("max_limit"), 50)
+
+        # Evaluation for malicious agent still fails closed
+        malicious_ctx = TrustedAgentContext(agent_id="malicious_agent_override")
+        req_malicious = PolicyEvaluationRequest(
+            agent_context=malicious_ctx,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": 10},
+        )
+        dec_malicious = self.engine.evaluate(req_malicious)
+        self.assertEqual(dec_malicious.outcome, PolicyOutcome.DENY)
+
+        # 3. Post-registration mutation on original passed rule does not affect engine
+        custom_engine = PolicyEngine(load_defaults=False)
+        agent_list = ["agent_sales_1"]
+        conds = {"max_limit": 20}
+        custom_rule = PolicyRule(
+            policy_id="MUTABLE-TEST",
+            name="Mutable Test",
+            description="Testing post-add mutation",
+            outcome=PolicyOutcome.ALLOW,
+            target_agents=agent_list,
+            target_tools=["test_tool"],
+            conditions=conds,
+        )
+        custom_engine.add_policy(custom_rule)
+
+        # Mutate the original inputs after registration
+        agent_list.append("spoofed_agent")
+        conds["max_limit"] = 1000
+
+        stored = custom_engine.get_policy("MUTABLE-TEST")
+        self.assertNotIn("spoofed_agent", stored.target_agents)
+        self.assertEqual(stored.conditions["max_limit"], 20)
+
+        # 4. list_policies returns independent copies
+        listed = custom_engine.list_policies()
+        listed[0].target_agents.append("another_tamper")
+        stored_again = custom_engine.get_policy("MUTABLE-TEST")
+        self.assertNotIn("another_tamper", stored_again.target_agents)
+
+    # 16. Regression: M2-M-01 Resource Wildcard Boundary
+    def test_finding_m2_m01_resource_wildcard_boundary(self):
+        """M2-M-01: Verify 'crm:*' matches 'crm:customers' but NEVER 'crmX:secret' or 'crm2:data'."""
+        engine = PolicyEngine(load_defaults=False)
+        engine.add_policy(
+            PolicyRule(
+                policy_id="CRM-WILDCARD-RULE",
+                name="CRM Wildcard",
+                description="Allow crm:* namespace resources",
+                outcome=PolicyOutcome.ALLOW,
+                priority=10,
+                target_agents=["agent_sales_1"],
+                target_tools=["query_tool"],
+                target_resources=["crm:*"],
+            )
+        )
+
+        # Allowed sub-resources in crm: namespace
+        for valid_res in ["crm:customers", "crm:orders", "crm:invoices", "crm:customers:active"]:
+            req = PolicyEvaluationRequest(
+                agent_context=self.agent_sales_1,
+                tool_name="query_tool",
+                resource=valid_res,
+            )
+            dec = engine.evaluate(req)
+            self.assertEqual(dec.outcome, PolicyOutcome.ALLOW, f"Expected ALLOW for {valid_res}")
+
+        # Blocked adjacent resources that merely share 'crm' prefix without colon separator
+        for invalid_res in ["crmX:secret", "crm2:hr_data", "crm_backup:secrets", "crm_internal", "crmextra"]:
+            req = PolicyEvaluationRequest(
+                agent_context=self.agent_sales_1,
+                tool_name="query_tool",
+                resource=invalid_res,
+            )
+            dec = engine.evaluate(req)
+            self.assertEqual(dec.outcome, PolicyOutcome.DENY, f"Expected DENY for {invalid_res}")
+
+    # 17. Regression: M2-M-02 Explicit Resource Scoping (No Implicit Cross-Resource Aliasing)
+    def test_finding_m2_m02_explicit_resource_scoping_no_implicit_alias(self):
+        """M2-M-02: Verify no automatic aliasing between 'crm' root and 'crm:customers'."""
+        engine = PolicyEngine(load_defaults=False)
+
+        # Rule 1: Targets ONLY "crm" root namespace
+        engine.add_policy(
+            PolicyRule(
+                policy_id="CRM-ROOT-ONLY",
+                name="CRM Root Only",
+                description="Allows only crm root",
+                outcome=PolicyOutcome.ALLOW,
+                priority=10,
+                target_agents=["agent_sales_1"],
+                target_tools=["query_tool"],
+                target_resources=["crm"],
+            )
+        )
+
+        # Root "crm" succeeds
+        req_root = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="query_tool",
+            resource="crm",
+        )
+        self.assertEqual(engine.evaluate(req_root).outcome, PolicyOutcome.ALLOW)
+
+        # Sub-resource "crm:customers" must NOT match "crm" root rule (no implicit widening)
+        req_sub = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="query_tool",
+            resource="crm:customers",
+        )
+        self.assertEqual(engine.evaluate(req_sub).outcome, PolicyOutcome.DENY)
+
+        # Rule 2: Targets ONLY "crm:customers" sub-resource
+        engine_sub = PolicyEngine(load_defaults=False)
+        engine_sub.add_policy(
+            PolicyRule(
+                policy_id="CRM-SUB-ONLY",
+                name="CRM Customers Sub-Resource Only",
+                description="Allows only crm:customers",
+                outcome=PolicyOutcome.ALLOW,
+                priority=10,
+                target_agents=["agent_sales_1"],
+                target_tools=["query_tool"],
+                target_resources=["crm:customers"],
+            )
+        )
+
+        # Sub-resource "crm:customers" succeeds
+        self.assertEqual(engine_sub.evaluate(req_sub).outcome, PolicyOutcome.ALLOW)
+
+        # Root "crm" must NOT match "crm:customers" rule (no reverse aliasing)
+        self.assertEqual(engine_sub.evaluate(req_root).outcome, PolicyOutcome.DENY)
+
+    # 18. Regression: M2-M-03 Limit Condition Fail-Closed
+    def test_finding_m2_m03_limit_condition_fail_closed_on_missing_or_invalid_limit(self):
+        """M2-M-03: Verify requests fail closed when limit condition exists but limit is missing/invalid."""
+        engine = PolicyEngine(load_defaults=False)
+        engine.add_policy(
+            PolicyRule(
+                policy_id="LIMITED-SEARCH-ALLOW",
+                name="Limited Search",
+                description="Allow search <= 50",
+                outcome=PolicyOutcome.ALLOW,
+                priority=10,
+                target_agents=["agent_sales_1"],
+                target_tools=["search_customer_records"],
+                conditions={"max_limit": 50},
+            )
+        )
+
+        # Missing limit parameter -> Fails closed to DENY (does not match rule)
+        req_no_limit = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test"},
+        )
+        dec_no_limit = engine.evaluate(req_no_limit)
+        self.assertEqual(dec_no_limit.outcome, PolicyOutcome.DENY)
+
+        # None limit -> DENY
+        req_none_limit = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": None},
+        )
+        self.assertEqual(engine.evaluate(req_none_limit).outcome, PolicyOutcome.DENY)
+
+        # String limit -> DENY
+        req_str_limit = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": "50"},
+        )
+        self.assertEqual(engine.evaluate(req_str_limit).outcome, PolicyOutcome.DENY)
+
+        # Boolean limit (True/False should not be treated as int 1/0) -> DENY
+        req_bool_limit = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": True},
+        )
+        self.assertEqual(engine.evaluate(req_bool_limit).outcome, PolicyOutcome.DENY)
+
+        # Valid limit <= 50 -> ALLOW
+        req_valid_limit = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": 25},
+        )
+        self.assertEqual(engine.evaluate(req_valid_limit).outcome, PolicyOutcome.ALLOW)
+
+        # Valid limit > 50 -> DENY
+        req_exceeded = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": 75},
+        )
+        self.assertEqual(engine.evaluate(req_exceeded).outcome, PolicyOutcome.DENY)
+
+    # 19. Regression: M2-M-04 Recursive Secret Redaction in Audit Summary
+    def test_finding_m2_m04_recursive_audit_parameter_redaction(self):
+        """M2-M-04: Verify recursive secret redaction across nested dictionaries and lists."""
+        req = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            action="search",
+            resource="crm:customers",
+            parameters={
+                "query": "Acme",
+                "limit": 10,
+                # Nested dict containing secret
+                "connection": {
+                    "host": "crm.internal",
+                    "api_key": "sk-super-secret-key-1234",
+                    "port": 5432,
+                },
+                # List containing nested dicts with secrets
+                "headers": [
+                    {"Content-Type": "application/json"},
+                    {"Authorization": "Bearer secret_bearer_token"},
+                ],
+                # Top-level sensitive keyword variants
+                "credential": "cred_secret_value",
+                "bearer_token": "bearer_abc",
+                "private_data": "private_xyz",
+                "safe_field": "public_data",
+            },
+        )
+        dec = self.engine.evaluate(req)
+        audit = dec.to_dict()
+        summary = audit["evaluated_parameters_summary"]
+
+        # Safe values preserved
+        self.assertEqual(summary["query"], "Acme")
+        self.assertEqual(summary["limit"], 10)
+        self.assertEqual(summary["safe_field"], "public_data")
+        self.assertEqual(summary["connection"]["host"], "crm.internal")
+        self.assertEqual(summary["connection"]["port"], 5432)
+        self.assertEqual(summary["headers"][0]["Content-Type"], "application/json")
+
+        # Nested dict secret omitted
+        self.assertNotIn("api_key", summary["connection"])
+
+        # List-nested secret omitted
+        self.assertNotIn("Authorization", summary["headers"][1])
+
+        # Sensitive keywords omitted
+        self.assertNotIn("credential", summary)
+        self.assertNotIn("bearer_token", summary)
+        self.assertNotIn("private_data", summary)
+
+        # Test depth bounding (> 5 levels)
+        deep_dict = {"level1": {"level2": {"level3": {"level4": {"level5": {"level6": "too_deep"}}}}}}
+        req_deep = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "test", "limit": 10, "data": deep_dict},
+        )
+        summary_deep = self.engine.evaluate(req_deep).to_dict()["evaluated_parameters_summary"]
+        self.assertEqual(
+            summary_deep["data"]["level1"]["level2"]["level3"]["level4"]["level5"],
+            "[REDACTED-DEPTH]"
+        )
+
+    # 20. Regression: M2-L-02 Policy Rule List Item Validation
+    def test_finding_m2_l02_policy_rule_list_item_type_validation(self):
+        """M2-L-02: Verify PolicyRule rejects non-string items in target lists."""
+        with self.assertRaises(TypeError):
+            PolicyRule(
+                policy_id="BAD-TARGET-AGENTS",
+                name="Bad Agents",
+                description="Testing non-string agent items",
+                outcome=PolicyOutcome.ALLOW,
+                target_agents=[None, 123],  # Non-string items
+            )
+
+        with self.assertRaises(TypeError):
+            PolicyRule(
+                policy_id="BAD-TARGET-TOOLS",
+                name="Bad Tools",
+                description="Testing non-string tool items",
+                outcome=PolicyOutcome.ALLOW,
+                target_tools=["tool_a", 456],  # Non-string item
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

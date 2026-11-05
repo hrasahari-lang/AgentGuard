@@ -23,7 +23,7 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 |---|---|---|---|
 | **Milestone 0** | Environment & Workspace Verification | **COMPLETE** | Python 3.11, pip, Node.js, Git verified; workspace constrained to `C:\Users\nunna\Desktop\GURDAI1`; clean `.venv` created. |
 | **Milestone 1** | Database & Protected Synthetic CRM | **COMPLETE** | SQLite schema, idempotent seeding, RFC 2606 safe domains, parameterized SQL queries, server-side resource scoping, atomic pre-committed invocation counters, WAL mode, 15s timeout, 11/11 unit tests passing. |
-| **Milestone 2** | Deterministic Policy Engine (without MCP) | **COMPLETE** | Pure deterministic rule engine, explicit outcomes (ALLOW, REQUIRE_APPROVAL, DENY), verified `TrustedAgentContext` requirement, tool argument spoofing resistance, deterministic precedence, fail-closed default, zero CRM execution during evaluation, 14 new unit tests (25/25 total suite passing). |
+| **Milestone 2** | Deterministic Policy Engine (without MCP) | **COMPLETE** | Pure deterministic rule engine, explicit outcomes (ALLOW, REQUIRE_APPROVAL, DENY), verified `TrustedAgentContext` requirement, tool argument spoofing resistance, deterministic precedence, fail-closed default, zero CRM execution during evaluation. Hardened per M2 security review: frozen immutable `PolicyRule`, deep copies on get/list, exact wildcard prefix `crm:*`, explicit resource scoping without implicit aliasing, limit condition fail-closed, and recursive audit parameter redaction. 20 policy tests (31/31 total suite passing). |
 | **Milestone 3** | MCP Streamable HTTP Gateway | **PENDING** | Official MCP Python SDK v2, HTTP Bearer token authentication boundary, session identity mapping, tool registration, protected credential isolation. |
 | **Milestone 4** | Controlled Execution & Audit Engine | **PENDING** | Single executor routing, audit logging, separate decision vs. execution recording, failure recording without rolling back decision logs. |
 | **Milestone 5** | External Agent Integration | **PENDING** | Standalone agent client connecting over MCP Streamable HTTP, discovering tools and executing governed operations. |
@@ -74,11 +74,20 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
   - Requests matching no policy return `DENY` with `policy_id=None` and explainable reason.
 - [x] **Decoupled Architecture:**
   - Policy evaluation never touches the database or CRM counters (`test_no_protected_crm_execution_during_policy_evaluation` verifies counter remains 0).
-- [x] **Audit-Ready Serialization:**
-  - `PolicyDecision.to_dict()` outputs structured audit dictionaries with sensitive keys redacted.
+- [x] **Audit-Ready Serialization & Recursive Secret Redaction:**
+  - `PolicyDecision.to_dict()` outputs structured audit dictionaries with recursive parameter redaction.
+  - Multi-level nested dictionaries, lists, and sensitive keyword variations (`password`, `secret`, `token`, `key`, `auth`, `credential`, `bearer`, `private`) are safely scrubbed.
+  - Recursion depth bounded to 5 levels; oversized string parameters truncated.
+- [x] **Security Review Hardening (M2 Findings Remediated):**
+  - M2-H-01: `PolicyRule` is immutable (`@dataclass(frozen=True)`); engine stores and returns independent deep copies, preventing external state tampering.
+  - M2-M-01: Resource wildcard prefix matching corrected (`[:-1]` retains the colon separator, preventing prefix boundary leaks like `crmX:secret`).
+  - M2-M-02: Implicit cross-resource aliasing removed; policy scopes are strictly explicit or namespace-bounded.
+  - M2-M-03: Limit conditions fail closed if `limit` parameter is missing or non-numeric.
+  - M2-M-04: Recursive parameter sanitization protects against nested credential leaks in audit logs.
+  - M2-L-02: Target list items validated as strings at rule construction time.
 - [x] **Test Verification:**
-  - 14 automated unit tests in `tests/test_policy_engine.py` covering all 12 test specifications.
-  - Total test suite: 25 tests passing in 0.624s.
+  - 20 automated unit tests in `tests/test_policy_engine.py` (14 foundational + 6 targeted security regression tests).
+  - Total test suite: 31 tests passing in ~0.65s.
 
 ---
 

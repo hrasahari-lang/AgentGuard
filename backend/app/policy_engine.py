@@ -7,7 +7,8 @@ Enforces deterministic, explainable, zero-trust authorization decisions:
 - Fail-closed security: Missing, ambiguous, disabled, or malformed policies default to DENY
 - Decoupled architecture: Pure authorization analysis; never executes protected CRM tools
 """
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import time
 from typing import Any, Dict, List, Optional, Set, Union
@@ -85,9 +86,9 @@ class PolicyDecision:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class PolicyRule:
-    """Configurable, deterministic policy rule governing tool operations."""
+    """Configurable, deterministic, immutable policy rule governing tool operations."""
     policy_id: str
     name: str
     description: str
@@ -109,7 +110,7 @@ class PolicyRule:
             raise ValueError("name must be a non-empty string")
         if not isinstance(self.outcome, PolicyOutcome):
             if isinstance(self.outcome, str) and self.outcome.upper() in PolicyOutcome.__members__:
-                self.outcome = PolicyOutcome[self.outcome.upper()]
+                object.__setattr__(self, "outcome", PolicyOutcome[self.outcome.upper()])
             else:
                 raise ValueError(f"outcome must be a valid PolicyOutcome, got {self.outcome}")
         if not isinstance(self.priority, int) or isinstance(self.priority, bool):
@@ -118,17 +119,34 @@ class PolicyRule:
             raise TypeError("enabled must be a boolean")
         if not isinstance(self.risk_level, RiskLevel):
             if isinstance(self.risk_level, str) and self.risk_level.upper() in RiskLevel.__members__:
-                self.risk_level = RiskLevel[self.risk_level.upper()]
+                object.__setattr__(self, "risk_level", RiskLevel[self.risk_level.upper()])
             else:
-                self.risk_level = RiskLevel.LOW
+                object.__setattr__(self, "risk_level", RiskLevel.LOW)
         if not isinstance(self.target_agents, list):
             raise TypeError("target_agents must be a list of strings")
+        for a in self.target_agents:
+            if not isinstance(a, str):
+                raise TypeError(f"target_agents items must be strings, got {type(a).__name__}")
+        if not isinstance(self.target_roles, list):
+            raise TypeError("target_roles must be a list of strings")
+        for r in self.target_roles:
+            if not isinstance(r, str):
+                raise TypeError(f"target_roles items must be strings, got {type(r).__name__}")
         if not isinstance(self.target_tools, list):
             raise TypeError("target_tools must be a list of strings")
+        for t in self.target_tools:
+            if not isinstance(t, str):
+                raise TypeError(f"target_tools items must be strings, got {type(t).__name__}")
         if not isinstance(self.target_actions, list):
             raise TypeError("target_actions must be a list of strings")
+        for act in self.target_actions:
+            if not isinstance(act, str):
+                raise TypeError(f"target_actions items must be strings, got {type(act).__name__}")
         if not isinstance(self.target_resources, list):
             raise TypeError("target_resources must be a list of strings")
+        for res in self.target_resources:
+            if not isinstance(res, str):
+                raise TypeError(f"target_resources items must be strings, got {type(res).__name__}")
         if not isinstance(self.conditions, dict):
             raise TypeError("conditions must be a dictionary")
 
@@ -243,6 +261,38 @@ def get_default_policies() -> List[PolicyRule]:
     ]
 
 
+_SENSITIVE_KEY_SUBSTRINGS = frozenset(
+    ("password", "secret", "token", "key", "auth", "credential", "bearer", "private")
+)
+
+
+def _sanitize_parameters(obj: Any, depth: int = 0) -> Any:
+    """Recursively sanitize parameters dictionary for audit logging.
+
+    - Omits any key containing sensitive words (password, secret, token, key, auth, etc.)
+    - Recursively inspects nested dictionaries and lists/tuples/sets
+    - Bounds recursion depth to 5 (returns '[REDACTED-DEPTH]')
+    - Truncates oversized string values (> 1000 chars)
+    """
+    if depth > 5:
+        return "[REDACTED-DEPTH]"
+    if isinstance(obj, dict):
+        sanitized = {}
+        for k, v in obj.items():
+            k_str = str(k).lower()
+            if any(s in k_str for s in _SENSITIVE_KEY_SUBSTRINGS):
+                continue  # Omit sensitive key and its value entirely from summary
+            sanitized[k] = _sanitize_parameters(v, depth + 1)
+        return sanitized
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_parameters(item, depth + 1) for item in obj]
+    if isinstance(obj, set):
+        return [_sanitize_parameters(item, depth + 1) for item in sorted(obj, key=str)]
+    if isinstance(obj, str) and len(obj) > 1000:
+        return obj[:1000] + "...[TRUNCATED]"
+    return obj
+
+
 class PolicyEngine:
     """Deterministic authorization decision engine for AgentGuard."""
 
@@ -260,24 +310,25 @@ class PolicyEngine:
                 self.add_policy(rule)
 
     def add_policy(self, rule: PolicyRule) -> None:
-        """Register or update a policy rule."""
+        """Register or update a policy rule. Stores an independent deep copy."""
         if not isinstance(rule, PolicyRule):
             raise TypeError("rule must be an instance of PolicyRule")
-        self._rules[rule.policy_id] = rule
+        self._rules[rule.policy_id] = copy.deepcopy(rule)
 
     def remove_policy(self, policy_id: str) -> bool:
         """Remove a policy rule by ID. Returns True if removed, False otherwise."""
         return self._rules.pop(policy_id, None) is not None
 
     def get_policy(self, policy_id: str) -> Optional[PolicyRule]:
-        """Retrieve a policy rule by ID."""
-        return self._rules.get(policy_id)
+        """Retrieve a policy rule by ID. Returns an independent deep copy."""
+        rule = self._rules.get(policy_id)
+        return copy.deepcopy(rule) if rule is not None else None
 
     def list_policies(self, enabled_only: bool = False) -> List[PolicyRule]:
-        """Return all registered policy rules."""
+        """Return all registered policy rules as independent deep copies."""
         if enabled_only:
-            return [r for r in self._rules.values() if r.enabled]
-        return list(self._rules.values())
+            return [copy.deepcopy(r) for r in self._rules.values() if r.enabled]
+        return [copy.deepcopy(r) for r in self._rules.values()]
 
     def set_policy_enabled(self, policy_id: str, enabled: bool) -> bool:
         """Enable or disable a specific policy rule dynamically."""
@@ -285,7 +336,7 @@ class PolicyEngine:
             raise TypeError("enabled must be a boolean")
         rule = self._rules.get(policy_id)
         if rule:
-            rule.enabled = enabled
+            self._rules[policy_id] = replace(rule, enabled=enabled)
             return True
         return False
 
@@ -361,11 +412,8 @@ class PolicyEngine:
         tool_name = request.tool_name.strip()
         params = request.parameters if isinstance(request.parameters, dict) else {}
 
-        # Sanitize parameters for summary (redacting any potential secret/sensitive keys)
-        param_summary = {
-            k: v for k, v in params.items()
-            if not any(s in k.lower() for s in ("password", "secret", "token", "key"))
-        }
+        # Recursively sanitize parameters for summary (redacting secrets across nested levels)
+        param_summary = _sanitize_parameters(params)
 
         # 2. Candidate Match Collection
         candidates: List[PolicyRule] = []
@@ -486,6 +534,14 @@ class PolicyEngine:
 
     @staticmethod
     def _matches_resource(rule: PolicyRule, resource: str) -> bool:
+        """Evaluate resource matching against rule targets.
+
+        Supports exact match and trailing wildcard prefix match (e.g. 'crm:*' matches
+        'crm:customers' and 'crm:orders', but not 'crmX:secret').
+        Note: No automatic cross-resource aliasing is performed (e.g. 'crm' does not
+        automatically alias to 'crm:customers'). Policies must explicitly list target
+        resources or use prefix wildcards such as 'crm:*'.
+        """
         if "*" in rule.target_resources:
             return True
         res_lower = resource.lower()
@@ -493,13 +549,8 @@ class PolicyEngine:
             tr_lower = tr.lower()
             if tr_lower == res_lower:
                 return True
-            # Wildcard prefix matching e.g. "crm:*" matches "crm:customers"
-            if tr_lower.endswith(":*") and res_lower.startswith(tr_lower[:-2]):
-                return True
-            # Handle resource equivalence between "crm" and "crm:customers"
-            if tr_lower == "crm" and res_lower == "crm:customers":
-                return True
-            if tr_lower == "crm:customers" and res_lower == "crm":
+            # Wildcard prefix matching e.g. "crm:*" matches "crm:customers" (slice [:-1] retains the ':')
+            if tr_lower.endswith(":*") and res_lower.startswith(tr_lower[:-1]):
                 return True
         return False
 
@@ -509,9 +560,12 @@ class PolicyEngine:
         if not conditions:
             return True
 
-        # Numeric limits
-        limit_val = params.get("limit")
-        if limit_val is not None and isinstance(limit_val, (int, float)) and not isinstance(limit_val, bool):
+        # Numeric limits: if policy requires min_limit or max_limit, limit param must be present and valid
+        has_limit_condition = "max_limit" in conditions or "min_limit" in conditions
+        if has_limit_condition:
+            limit_val = params.get("limit")
+            if limit_val is None or not isinstance(limit_val, (int, float)) or isinstance(limit_val, bool):
+                return False  # Fail closed: required limit condition cannot be evaluated
             if "max_limit" in conditions and limit_val > conditions["max_limit"]:
                 return False
             if "min_limit" in conditions and limit_val < conditions["min_limit"]:
