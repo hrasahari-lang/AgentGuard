@@ -112,7 +112,7 @@ Diff Check: `git diff --check` — Exit Code `0`.
 
 ## 5. Current Known Errors / Blockers
 
-M3 uses prototype registry authentication, not OAuth/SSO. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain unimplemented. `gh auth status` reports no authenticated GitHub host; therefore account identity and write permission cannot be verified, and no push is safe or was attempted. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
+M3 uses prototype registry authentication, not OAuth/SSO. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain unimplemented. The connected GitHub integration identifies `dreamwasnotthere`, and repository metadata reports `push: true` for the required repository. The local `gh` CLI is unauthenticated, so the Git transport identity is not verified; no push was attempted. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
 
 ---
 
