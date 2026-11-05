@@ -249,6 +249,55 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         self.assertIn("Request denied by AgentGuard policy", result.stdout)
         self.assertNotIn(self.token, result.stdout + result.stderr)
 
+    def test_managed_agent_uses_gateway_auth_policy_execution_and_audit(self):
+        request_id = "managed-agent-search-1"
+        environment = os.environ.copy()
+        environment["AGENTGUARD_TOKEN"] = self.token
+        environment["AGENTGUARD_MCP_URL"] = self.url
+        command = [
+            sys.executable, "-m", "demo.managed_agent", "--query", "Acme",
+            "--request-id", request_id,
+        ]
+        result = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(request_id, result.stdout)
+        self.assertIn("CUST-101", result.stdout)
+        self.assertNotIn(self.token, result.stdout + result.stderr)
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+
+        retry = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parents[1],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertNotEqual(retry.returncode, 0)
+        self.assertIn("not re-executed", retry.stderr)
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+
+        from backend.app.audit.audit_store import AuditStore
+
+        events = AuditStore(self.db_path).list_events()
+        self.assertEqual(
+            [event["execution_status"] for event in events],
+            ["SUCCEEDED", "DUPLICATE_REQUEST"],
+        )
+        self.assertTrue(all(event["decision"] == "ALLOW" for event in events))
+        self.assertTrue(all(event["agent_id"] == "agent_sales_1" for event in events))
+        expected_request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        self.assertTrue(all(event["request_id"] == expected_request_hash for event in events))
+
     def test_admin_read_api_returns_real_dashboard_data(self):
         root = self.url.rsplit("/mcp", 1)[0]
         sales_request = Request(

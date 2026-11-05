@@ -35,6 +35,18 @@ The credential command displays the raw token once. Configure an MCP client to c
 
 The database persists in `backend/data/agentguard.db` by default. Override the path with `AGENTGUARD_DB_PATH`.
 
+### Run the managed MCP task agent
+
+With the gateway running, use a separate terminal and the token issued for the agent identity:
+
+```powershell
+$env:AGENTGUARD_TOKEN = "<provisioned agent token>"
+$env:AGENTGUARD_MCP_URL = "http://127.0.0.1:8000/mcp"
+.\.venv\Scripts\python.exe -m demo.managed_agent --query "Acme"
+```
+
+The client discovers and calls `search_customer_records` through the authenticated MCP gateway. It has no CRM database access. It prints a request ID before the call; provide `--request-id <id>` when a stable key is needed. After a connection error or unclear result, inspect the audit before retrying.
+
 ### Admin dashboard
 
 In a second terminal, start the Vite dashboard:

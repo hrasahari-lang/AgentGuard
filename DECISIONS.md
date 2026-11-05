@@ -27,6 +27,7 @@ These decisions are the current baseline. Reopen them only when a concrete techn
 22. **Trusted identity boundary:** Normal `TrustedAgentContext` and `AgentPrincipal` constructors reject calls without internal authentication capabilities. Production contexts are derived only from verified active credentials. Tests create contexts by issuing and verifying isolated test credentials.
 23. **Authentication failure audit:** Persist only a fixed category and timestamp for failed credentials. Authentication remains denied when the audit write fails; fallback logging emits the category only.
 24. **Execution idempotency and ambiguity:** Bind optional stable request IDs to agent and canonical request hashes; hash request IDs before persistence; reject repeats and mismatches. Current tools are read-only. Any future mutating tool must require a stable caller-provided idempotency key. Record decision, start, completed outcome, and outcome-audit failure distinctly; an unmarkable outcome remains STARTED/unknown and cannot be replayed.
+25. **Managed agent demo:** The minimal AgentGuard-managed task agent is an MCP client only. It obtains its bearer credential from the process environment, discovers the existing gateway tool, and sends all work through that gateway. It does not import the CRM repository or database. It prints a request ID before execution so ambiguous network outcomes can be checked against audit records.
 
 ## User environment and preferences
 
