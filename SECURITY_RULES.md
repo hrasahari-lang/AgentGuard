@@ -11,34 +11,36 @@ These rules are mandatory for the MVP. A feature is not complete if it violates 
 5. Support revocation / inactive agent status.
 6. Use constant-time comparison where custom token-hash verification is implemented.
 7. Do not log bearer tokens or secrets.
+8. Do not allow ordinary code paths or request payloads to construct trusted principals. Trusted contexts are issued only from an active credential verification result; tests must use an explicit credential-backed fixture.
+9. Persist authentication failures as fixed reason categories only. Never include bearer values, Authorization headers, raw bodies, or tokens in failure rows or fallback logs. Deny the request if authentication auditing fails.
 
 ## Authorization
 
-8. Check exact tool + operation + resource scope.
-9. Enforce scope in the actual protected-resource query or API operation, not only in a pre-check.
-10. Missing, unknown, conflicting or unavailable policy defaults to DENY.
-11. A hard permission violation remains DENY; risk scores cannot override it.
-12. LLM outputs, prompts, tool descriptions and retrieved documents cannot change policy or approve actions.
+10. Check exact tool + operation + resource scope.
+11. Enforce scope in the actual protected-resource query or API operation, not only in a pre-check.
+12. Missing, unknown, conflicting or unavailable policy defaults to DENY.
+13. A hard permission violation remains DENY; risk scores cannot override it.
+14. LLM outputs, prompts, tool descriptions and retrieved documents cannot change policy or approve actions.
 
 ## Execution and credentials
 
-13. Agents never receive direct protected database connection strings or master API tokens.
-14. Only the AgentGuard backend executor holds protected resource credentials.
-15. A protected tool executes only after an ALLOW decision or valid human approval followed by revalidation.
-16. `REQUIRE_APPROVAL` must not execute the tool.
-17. A DENY must not invoke the protected tool.
-18. Use parameterized database operations and validate arguments against schemas and business rules.
-19. Protect against duplicate calls and approval replay using unique request IDs / idempotency keys.
-20. For the MVP, do not expose shell, arbitrary SQL or generic HTTP request tools to agents.
+15. Agents never receive direct protected database connection strings or master API tokens.
+16. Only the AgentGuard backend executor holds protected resource credentials.
+17. A protected tool executes only after an ALLOW decision or valid human approval followed by revalidation.
+18. `REQUIRE_APPROVAL` must not execute the tool.
+19. A DENY must not invoke the protected tool.
+20. Use parameterized database operations and validate arguments against schemas and business rules.
+21. Bind a stable request ID to the authenticated agent and canonical request hash. Reject duplicate or conflicting replays without re-execution. Every future mutating tool must require a caller-supplied stable idempotency key.
+22. For the MVP, do not expose shell, arbitrary SQL or generic HTTP request tools to agents.
 
 ## Audit
 
-21. Record every attempt, including authentication failures and denials where possible.
-22. Separate policy decision from execution status.
-23. Record execution start and success/failure separately.
-24. Redact secrets and sensitive data from logs; store sanitized summaries or hashes.
-25. If the audit write needed to establish the authorization decision fails, fail closed before executing the resource operation.
-26. Do not call ordinary database logs “non-repudiable” or “tamper-proof.” Use “persistent audit trail”; describe tamper-evidence only if a verified integrity mechanism is implemented.
+23. Record every attempt, including sanitized authentication failure categories and policy denials.
+24. Separate policy decision from execution status.
+25. Record execution start and success/failure separately. Mark outcome-audit failure when possible; otherwise leave the event in STARTED/unknown state and prevent replay.
+26. Redact secrets and sensitive data from logs; store sanitized summaries or hashes.
+27. If the audit write needed to establish the authorization decision or execution start fails, fail closed before the resource operation.
+28. Do not call ordinary database logs “non-repudiable,” “immutable” or “tamper-proof.” Use “persistent audit trail”; describe tamper-evidence only if a verified integrity mechanism is implemented.
 
 ## Risk
 

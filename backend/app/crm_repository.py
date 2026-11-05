@@ -20,7 +20,10 @@ from backend.app.config import get_db_path
 from backend.app.database import is_in_memory_db
 
 
-@dataclass(frozen=True)
+_TRUSTED_CONTEXT_AUTHORITY = object()
+
+
+@dataclass(frozen=True, init=False)
 class TrustedAgentContext:
     """Trusted server-side representation of an authenticated calling agent.
     
@@ -30,11 +33,15 @@ class TrustedAgentContext:
     agent_id: str
     is_admin: bool = False
 
-    def __post_init__(self):
-        if not isinstance(self.agent_id, str) or not self.agent_id.strip():
+    def __init__(self, agent_id: str, is_admin: bool = False, *, _authority: object | None = None):
+        if _authority is not _TRUSTED_CONTEXT_AUTHORITY:
+            raise TypeError("TrustedAgentContext can only be created by verified authentication")
+        if not isinstance(agent_id, str) or not agent_id.strip():
             raise ValueError("TrustedAgentContext requires a non-empty string agent_id")
-        if not isinstance(self.is_admin, bool):
+        if not isinstance(is_admin, bool):
             raise TypeError("is_admin must be a boolean")
+        object.__setattr__(self, "agent_id", agent_id)
+        object.__setattr__(self, "is_admin", is_admin)
 
 
 # Counter tracking helpers that persist independently of transaction failures

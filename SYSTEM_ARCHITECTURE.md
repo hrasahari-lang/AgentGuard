@@ -79,7 +79,9 @@ Return result to agent
 
 The gateway uses the official MCP Python SDK v2 Streamable HTTP app behind an ASGI bearer-authentication middleware. Every HTTP request is authenticated before MCP routing. The initial hackathon implementation uses a local credential registry as a constrained prototype, not OAuth or enterprise SSO; credentials are provisioned by a trusted local CLI, and only SHA-256 token hashes are stored. Remote clients must be configured with a bearer token out of band. Do not describe this as an OAuth authorization server.
 
-`AgentAuthenticationMiddleware` verifies the credential against the active registry using constant-time hash comparison, then derives `TrustedAgentContext` from the stored `agent_id` and admin flag. A request-scoped `ContextVar` carries that context to handlers. Tool schemas contain no identity or role fields. A credential can be revoked in the registry; raw token material is printed only once by the provisioning command.
+`AgentAuthenticationMiddleware` verifies the credential against the registry using constant-time hash comparison, then derives `TrustedAgentContext` from the stored `agent_id` and admin flag. `AgentPrincipal` and `TrustedAgentContext` constructors reject ordinary construction; the context is created through the verified principal path. Unit tests use an explicit fixture that issues and verifies an isolated credential. A request-scoped `ContextVar` carries the context to handlers. Tool schemas contain no identity or role fields. A credential can be revoked in the registry; raw token material is printed only once by the provisioning command.
+
+Authentication denials are stored in a separate table as fixed reason categories only: missing credential, malformed bearer, invalid token, revoked credential, duplicate Authorization header, or credential-registry failure. No header, token, source IP, or request body is persisted. If the audit write fails, authentication still denies the request; only a fixed category is emitted through the application logger.
 
 The MCP SDK's in-memory client and stdio transport do not exercise this HTTP middleware. Gateway security tests start a local ASGI server and use the SDK's Streamable HTTP client with bearer headers.
 
@@ -96,16 +98,20 @@ The MCP SDK's in-memory client and stdio transport do not exercise this HTTP mid
 
 ## 6. Audit lifecycle
 
-Audit records should distinguish:
+Audit records distinguish:
 
 - request received;
 - authentication result;
 - policy decision;
 - approval state;
 - execution started;
-- execution succeeded or failed.
+- execution succeeded, failed, or has an ambiguous outcome because its outcome audit write failed.
 
-At minimum, persist the decision before executing a protected side effect. On completion, update the correlated execution outcome as `SUCCEEDED` or `FAILED`, recording only the exception type on failure. Denials and approval-pending requests are persisted without touching CRM. The initial audit schema stores identity, tool/action/resource, decision, policy ID, execution status, safe error type and timestamp; it omits request values. If the audit write needed to establish the decision fails, fail closed before execution.
+For an allowed request, the database records `DECISION_RECORDED`, then an atomic transition to `STARTED` before invoking the resource, followed by `SUCCEEDED` or `FAILED`. If the outcome write fails, a best-effort marker records `OUTCOME_AUDIT_FAILED`; if that write also fails, `STARTED` remains as an explicit unknown outcome and the caller is told not to retry with a new request ID. A denial or approval-pending request is persisted without touching CRM. Audit data includes a digest of request identifiers and request content, never raw arguments or credentials. If the decision or start write fails, do not execute.
+
+Current tools accept an optional stable `request_id`; its digest is scoped by authenticated agent and bound to a canonical request hash. A repeated key is not re-executed, and reuse with different content is rejected. Current tools are read-only. Any future mutating tool must require a caller-supplied stable idempotency key; an automatically generated key cannot deduplicate a client retry across calls.
+
+Authentication failure rows are sanitized reason categories only. The ordinary SQLite audit remains mutable and is not tamper-evident, immutable, or non-repudiable.
 
 For the MVP, an append-only application API is acceptable, but do not claim tamper-proof or non-repudiable logging unless a suitable integrity and access-control design is implemented. A hash chain is an optional tamper-evidence improvement, not a substitute for secure access control.
 

@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** M3/M4/M5 local vertical slice and read-only dashboard MVP — verified locally
+**Stage:** Independent security remediation — Stage 1 verified; managed-agent Stage 2 pending
 
 ---
 
@@ -28,6 +28,8 @@
 - Full-suite verification for this remediation: `.\\.venv\\Scripts\\python.exe -B -m unittest discover -s tests -v` — **35 tests passed in 0.551s**.
 - M3/M4 implementation adds the pinned MCP SDK 2.3.0 Streamable HTTP gateway, hashed/revocable credentials, pre-routing bearer auth, scoped CRM tools, persistent decision/execution audit, and fail-closed handling.
 - A separate MCP client demo and HTTP tests exercise discovery, ALLOW, DENY, REQUIRE_APPROVAL, identity spoof attempts, token rejection/rotation/revocation, audit failures, and execution failures.
+- Independent review Stage 1 fixes: gated trusted context/principal constructors; credential-backed test fixtures; sanitized authentication failure records; endpoint authorization matrix; request ID idempotency; distinct execution/audit ambiguity states.
+- `httpx2` is intentional for MCP SDK v2. `requirements.txt` pins the complete Python 3.11 runtime/test dependency set, including direct `mcp`, `httpx2`, and `uvicorn` imports. Tests use standard-library `unittest`.
 - An admin-authenticated read-only React + TypeScript dashboard loads real overview counts, agents, policies, and audit rows from backend APIs. No metrics are simulated. The admin token is held in browser memory only.
 - The M3/M4/M5 backend and local dashboard milestone changes are implemented and verified. This remains a local prototype: authentication is a local bearer-token registry, not OAuth; approval handling, dynamic policy editing, production deployment, and Render Workflows remain outstanding.
 
@@ -36,7 +38,7 @@
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Branch `main`, HEAD `63338c1` (`feat: add bearer credential authentication`), following `05ab4a8` (`feat: add governed MCP gateway and dashboard MVP`). Both commits descend from merge `d56fb53`, which preserves remote commit `85eca75`. Implementation is committed locally. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
+- **Git status:** Branch `main`, HEAD `a4d9319`; this remediation is pending a local checkpoint. Existing untracked `M2_FINAL_SECURITY_REVIEW.md`, `AgentGuard_Audit.zip`, and `AgentGuard_Audit/` remain untouched and are excluded from remediation commits. No push was made.
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
 - **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
 - **Python environment:** Python 3.11; `mcp==2.3.0` and HTTP runtime dependencies installed in `.venv` and pinned directly in `requirements.txt` for the gateway. Tests use standard-library `unittest`.
@@ -44,27 +46,32 @@
 
 ---
 
-## 3. M3/M4/M5 Files Added or Modified
+## 3. Files Changed in Security Remediation Stage 1
 
-- `backend/app/policy_engine.py` (M2 hardening plus thread-safe policy registry reads and writes)
-- `backend/app/security/auth.py` (hashed credential issuance, rotation, revocation, verification and ASGI middleware)
-- `backend/app/audit/audit_store.py` (persistent policy and execution audit)
-- `backend/app/gateway/mcp_server.py` (MCP tools and governed execution)
-- `backend/app/provision_agent.py`, `backend/app/run_gateway.py`, `requirements.txt`
-- `demo/external_agent.py`, `tests/test_gateway.py`, concurrency and integration coverage
-- Root README, backend setup, security and architecture docs
+- `requirements.txt` (pinned Python 3.11 dependency set)
+- `backend/app/crm_repository.py`, `backend/app/security/auth.py` (gated identity construction and authentication audit)
+- `backend/app/audit/audit_store.py`, `backend/app/gateway/mcp_server.py` (execution phases and idempotency)
+- `tests/context_fixtures.py`, `tests/test_crm_repository.py`, `tests/test_policy_engine.py`, `tests/test_gateway.py`
+- `SYSTEM_ARCHITECTURE.md`, `SECURITY_RULES.md`, `DECISIONS.md`, `backend/README.md`, `CURRENT_STATE.md`, `GOALS_AND_PROGRESS.md`
 
 ---
 
 ## 4. Actual Test Results
 
 Command: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v`
-Latest result: **Ran 45 tests in 5.319s — OK (all passed).** This includes the 11 M1 CRM tests, M2 policy regression tests and M3/M4 HTTP gateway/API tests.
+Latest result: **Ran 55 tests in 12.019s — OK (all passed).** This includes the preserved 45-test baseline plus 10 security regressions.
+
+Clean-install evidence: created a fresh Python 3.11 venv outside the project and ran `pip install -r requirements.txt` successfully; the full 55-test suite and `compileall` passed in that environment. No pytest dependency is needed.
+
+New gateway regressions cover gated identity construction, sanitized auth-failure categories, fail-closed auth-audit errors, all admin endpoints for anonymous/invalid/ordinary/admin callers, sensitive-data exclusion, duplicate and conflicting request IDs, hashed identifiers, execution-start audit failure, outcome-audit ambiguity and replay refusal, and explicit idempotency keys for future mutations.
 
 Frontend build: `npm run build` from `frontend/` — **exit code 0**, TypeScript check and Vite production bundle succeeded.
 
-Compilation: `.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — **exit code 0** after implementation and docs update.
-Diff Check: `git diff --check` — **exit code 0** after implementation and docs update.
+Clean-environment interpreter: `C:\Users\nunna\AppData\Local\Temp\AgentGuard-Clean-Requirements-20261106\Scripts\python.exe`.
+Compilation: clean-environment `python -B -m compileall -q backend tests demo` — **exit code 0**.
+Frontend type check: `npm run typecheck` — **exit code 0**.
+Frontend production build: `npm run build` — **exit code 0**.
+Diff Check: `git diff --check` — pending final verification after documentation updates.
 
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
@@ -112,12 +119,12 @@ Diff Check: `git diff --check` — Exit Code `0`.
 
 ## 5. Current Known Errors / Blockers
 
-M3 uses prototype registry authentication, not OAuth/SSO. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain unimplemented. The connected GitHub integration identifies `dreamwasnotthere`, and repository metadata reports `push: true` for the required repository. The local `gh` CLI is unauthenticated, so the Git transport identity is not verified; no push was attempted. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
+M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs remain optional for current read-only tools; retry deduplication requires the caller to pass a stable `request_id`. Any future mutating operation must require one. SQLite audit is persistent but mutable and not tamper-evident. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain outstanding. No GitHub push was attempted.
 
 ---
 
 ## 6. Next Exact Task
 
-1. Reproduce the documented backend + dashboard demo locally with an admin credential.
-2. Implement human approval and replay protection as M6.
-3. Push the local commits only after GitHub authentication is established and the authenticated account's write permission to the exact origin is verified.
+1. Build the smallest MCP-managed agent demo using the existing authenticated gateway and stable request IDs; do not add UI features.
+2. Verify its ALLOW/DENY path through the gateway and audit records.
+3. Do not begin unrelated features or push to GitHub.

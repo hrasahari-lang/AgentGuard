@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
+import hashlib
 import json
 import os
 import socket
@@ -16,6 +18,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest.mock import patch
+from contextlib import closing
 
 import httpx2
 import uvicorn
@@ -24,7 +27,10 @@ from mcp.client.streamable_http import streamable_http_client
 
 from backend.app.crm_repository import CrmRepository, get_total_invocations
 from backend.app.gateway.mcp_server import create_gateway_app
-from backend.app.security.auth import AgentAuthenticator, issue_agent_token, revoke_agent_credentials
+from backend.app.gateway.mcp_server import _resolve_request_id
+from mcp.server.mcpserver.exceptions import ToolError
+from backend.app.security.auth import AgentAuthenticator, AgentPrincipal, issue_agent_token, revoke_agent_credentials
+from backend.app.crm_repository import TrustedAgentContext
 
 
 class TestAuthenticatedMcpGateway(unittest.TestCase):
@@ -75,6 +81,18 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
 
         return asyncio.run(call())
 
+    def _raw_request(self, method, path, headers=(), body=b""):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        try:
+            connection.putrequest(method, path)
+            for name, value in headers:
+                connection.putheader(name, value)
+            connection.endheaders(body)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
     def test_http_auth_precedes_mcp_and_protected_operations(self):
         request = Request(self.url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
         with self.assertRaises(HTTPError) as raised:
@@ -107,6 +125,62 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         finally:
             connection.close()
         self.assertNotIn(self.token, stored_hashes)
+
+    def test_authenticated_identity_is_the_only_context_factory(self):
+        with self.assertRaises(TypeError):
+            TrustedAgentContext("agent_admin", is_admin=True)
+        with self.assertRaises(TypeError):
+            AgentPrincipal("agent_admin", is_admin=True)
+        with self.assertRaises(RuntimeError):
+            from backend.app.security.auth import current_trusted_context
+            current_trusted_context()
+
+    def test_authentication_failures_are_categorized_without_secrets(self):
+        statuses = []
+        statuses.append(self._raw_request("GET", "/api/overview")[0])
+        statuses.append(self._raw_request("GET", "/api/overview", [("Authorization", "Basic secret-value")])[0])
+        statuses.append(self._raw_request("GET", "/api/overview", [
+            ("Authorization", "Bearer " + "a" * 43),
+            ("Authorization", "Bearer " + "b" * 43),
+        ])[0])
+        statuses.append(self._raw_request(
+            "GET", "/api/overview", [("Authorization", "Bearer " + "x" * 43)]
+        )[0])
+        self.assertEqual(statuses, [401, 401, 401, 401])
+
+        revoke_agent_credentials("agent_sales_1", db_path=self.db_path)
+        statuses.append(self._raw_request(
+            "GET", "/api/overview", [("Authorization", f"Bearer {self.token}")]
+        )[0])
+        self.assertEqual(statuses[-1], 401)
+
+        with patch.object(AgentAuthenticator, "authenticate", side_effect=sqlite3.OperationalError("registry unavailable")):
+            statuses.append(self._raw_request(
+                "GET", "/api/overview", [("Authorization", "Bearer " + "z" * 43)]
+            )[0])
+        self.assertEqual(statuses[-1], 401)
+
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            rows = connection.execute(
+                "SELECT failure_type FROM authentication_failure_events ORDER BY rowid"
+            ).fetchall()
+        self.assertEqual([row[0] for row in rows], [
+            "MISSING_CREDENTIAL", "MALFORMED_BEARER", "DUPLICATE_AUTHORIZATION",
+            "INVALID_TOKEN", "REVOKED_CREDENTIAL", "CREDENTIAL_REGISTRY_FAILURE",
+        ])
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            persisted = connection.execute("SELECT * FROM authentication_failure_events").fetchall()
+        persisted_text = repr(persisted)
+        for secret in (self.token, "secret-value", "a" * 43, "b" * 43, "x" * 43, "z" * 43):
+            self.assertNotIn(secret, persisted_text)
+
+    def test_authentication_audit_failure_still_rejects_request(self):
+        from backend.app.audit.audit_store import AuditStore
+
+        with patch.object(AuditStore, "record_authentication_failure", side_effect=OSError("disk unavailable")):
+            status, _body = self._raw_request("GET", "/api/overview")
+        self.assertEqual(status, 401)
+        self.assertEqual(get_total_invocations(self.db_path), 0)
 
     def test_allow_executes_and_deny_never_reaches_crm(self):
         allowed = self._call_tool(
@@ -207,6 +281,42 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         with urlopen(preflight, timeout=3) as response:
             self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:5173")
 
+    def test_every_admin_endpoint_enforces_auth_and_excludes_sensitive_data(self):
+        self._call_tool("search_customer_records", {"query": "Acme", "limit": 5}, self.token)
+        root = self.url.rsplit("/mcp", 1)[0]
+        admin_token = issue_agent_token("agent_admin", is_admin=True, db_path=self.db_path)
+        endpoints = ("/api/overview", "/api/agents", "/api/policies", "/api/audit?limit=100")
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint, identity="none"):
+                status, _body = self._raw_request("GET", endpoint)
+                self.assertEqual(status, 401)
+            with self.subTest(endpoint=endpoint, identity="invalid"):
+                status, _body = self._raw_request(
+                    "GET", endpoint, [("Authorization", "Bearer " + "q" * 43)]
+                )
+                self.assertEqual(status, 401)
+            with self.subTest(endpoint=endpoint, identity="ordinary-agent"):
+                status, _body = self._raw_request(
+                    "GET", endpoint, [("Authorization", f"Bearer {self.token}")]
+                )
+                self.assertEqual(status, 403)
+            with self.subTest(endpoint=endpoint, identity="admin"):
+                status, body = self._raw_request(
+                    "GET", endpoint, [("Authorization", f"Bearer {admin_token}")]
+                )
+                self.assertEqual(status, 200)
+                body_text = body.decode("utf-8")
+                for sensitive in (self.token, admin_token, "CUST-101", "Acme Industrial", "example.com"):
+                    self.assertNotIn(sensitive, body_text)
+
+        # Identity fields in public payloads cannot grant access to an admin route.
+        status, _body = self._raw_request(
+            "GET", "/api/agents",
+            [("Content-Type", "application/json")],
+            b'{"agent_id":"agent_admin","is_admin":true}',
+        )
+        self.assertEqual(status, 401)
+
     def test_audit_failure_blocks_allowed_resource_execution(self):
         from backend.app.audit.audit_store import AuditStore
 
@@ -229,6 +339,106 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         self.assertEqual(event["decision"], "ALLOW")
         self.assertEqual(event["execution_status"], "FAILED")
         self.assertEqual(event["error_type"], "RuntimeError")
+
+    def test_request_id_prevents_duplicate_execution_and_detects_conflict(self):
+        request_id = "retry-allowed-search-1"
+        first = self._call_tool("search_customer_records", {
+            "query": "Acme", "limit": 10, "request_id": request_id,
+        }, self.token)
+        second = self._call_tool("search_customer_records", {
+            "query": "Acme", "limit": 10, "request_id": request_id,
+        }, self.token)
+        conflict = self._call_tool("search_customer_records", {
+            "query": "BioPulse", "limit": 10, "request_id": request_id,
+        }, self.token)
+        self.assertFalse(first.is_error)
+        self.assertTrue(second.is_error)
+        self.assertTrue(conflict.is_error)
+        self.assertIn("not re-executed", "".join(item.text for item in second.content if hasattr(item, "text")))
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+        from backend.app.audit.audit_store import AuditStore
+
+        events = AuditStore(self.db_path).list_events()
+        self.assertEqual([event["execution_status"] for event in events], [
+            "SUCCEEDED", "DUPLICATE_REQUEST", "REQUEST_ID_CONFLICT",
+        ])
+        request_id_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        self.assertTrue(all(event["request_id"] == request_id_hash for event in events))
+        self.assertTrue(all(event["mcp_request_id"] for event in events))
+
+    def test_future_mutating_operation_must_require_stable_request_id(self):
+        with self.assertRaises(ToolError):
+            _resolve_request_id(None, require_stable_key=True)
+        with self.assertRaises(ToolError):
+            _resolve_request_id("contains\ncontrol", require_stable_key=True)
+        self.assertEqual(
+            _resolve_request_id("stable-mutation-1", require_stable_key=True),
+            "stable-mutation-1",
+        )
+
+    def test_request_identifiers_are_hashed_before_audit_persistence(self):
+        result = self._call_tool("search_customer_records", {
+            "query": "Acme", "limit": 10, "request_id": self.token,
+        }, self.token)
+        self.assertFalse(result.is_error)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            contents = repr(connection.execute(
+                "SELECT request_id, mcp_request_id, request_hash FROM audit_events"
+            ).fetchall())
+        self.assertNotIn(self.token, contents)
+
+    def test_execution_outcome_audit_failure_is_ambiguous_and_cannot_replay(self):
+        from backend.app.audit.audit_store import AuditStore
+
+        with patch.object(AuditStore, "record_outcome", side_effect=OSError("audit unavailable")):
+            result = self._call_tool("search_customer_records", {
+                "query": "Acme", "limit": 10, "request_id": "outcome-audit-failure-1",
+            }, self.token)
+        self.assertTrue(result.is_error)
+        message = "".join(item.text for item in result.content if hasattr(item, "text"))
+        self.assertIn("completed", message)
+        self.assertIn("Do not retry", message)
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+        event = AuditStore(self.db_path).list_events()[0]
+        self.assertEqual(event["decision"], "ALLOW")
+        self.assertEqual(event["execution_status"], "OUTCOME_AUDIT_FAILED")
+        self.assertIsNotNone(event["execution_started_at"])
+        self.assertIsNone(event["execution_completed_at"])
+
+        replay = self._call_tool("search_customer_records", {
+            "query": "Acme", "limit": 10, "request_id": "outcome-audit-failure-1",
+        }, self.token)
+        self.assertTrue(replay.is_error)
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+
+    def test_unwritable_outcome_audit_leaves_started_state_and_blocks_replay(self):
+        from backend.app.audit.audit_store import AuditStore
+
+        with patch.object(AuditStore, "record_outcome", side_effect=OSError("audit unavailable")), \
+             patch.object(AuditStore, "record_outcome_audit_failure", side_effect=OSError("audit unavailable")):
+            result = self._call_tool("search_customer_records", {
+                "query": "Acme", "limit": 10, "request_id": "unwritable-outcome-audit-1",
+            }, self.token)
+        self.assertTrue(result.is_error)
+        event = AuditStore(self.db_path).list_events()[0]
+        self.assertEqual(event["execution_status"], "STARTED")
+        replay = self._call_tool("search_customer_records", {
+            "query": "Acme", "limit": 10, "request_id": "unwritable-outcome-audit-1",
+        }, self.token)
+        self.assertTrue(replay.is_error)
+        self.assertEqual(get_total_invocations(self.db_path), 1)
+
+    def test_execution_start_audit_failure_prevents_resource_access(self):
+        from backend.app.audit.audit_store import AuditStore
+
+        with patch.object(AuditStore, "mark_execution_started", side_effect=OSError("audit unavailable")):
+            result = self._call_tool("search_customer_records", {
+                "query": "Acme", "limit": 10, "request_id": "start-audit-failure-1",
+            }, self.token)
+        self.assertTrue(result.is_error)
+        self.assertEqual(get_total_invocations(self.db_path), 0)
+        event = AuditStore(self.db_path).list_events()[0]
+        self.assertEqual(event["execution_status"], "DECISION_RECORDED")
 
     def test_approval_required_does_not_execute(self):
         result = self._call_tool(

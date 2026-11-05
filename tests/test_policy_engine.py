@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 
 from backend.app.crm_repository import TrustedAgentContext
+from tests.context_fixtures import authenticated_test_context
 from backend.app.policy_engine import (
     PolicyDecision,
     PolicyEngine,
@@ -36,9 +37,9 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
 
     def setUp(self):
         self.engine = PolicyEngine(load_defaults=True)
-        self.agent_sales_1 = TrustedAgentContext(agent_id="agent_sales_1")
-        self.agent_sales_2 = TrustedAgentContext(agent_id="agent_sales_2")
-        self.admin_agent = TrustedAgentContext(agent_id="admin_service", is_admin=True)
+        self.agent_sales_1 = authenticated_test_context("agent_sales_1")
+        self.agent_sales_2 = authenticated_test_context("agent_sales_2")
+        self.admin_agent = authenticated_test_context("admin_service", is_admin=True)
 
     # 1. Explicit allow
     def test_explicit_allow(self):
@@ -166,7 +167,7 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
     def test_no_matching_policy(self):
         """Verify requests with no matching policy fail closed to DENY."""
         # Unregistered agent identity
-        unregistered_agent = TrustedAgentContext(agent_id="agent_unregistered_999")
+        unregistered_agent = authenticated_test_context("agent_unregistered_999")
         req_unregistered = PolicyEvaluationRequest(
             agent_context=unregistered_agent,
             tool_name="search_customer_records",
@@ -689,7 +690,7 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
         self.assertEqual(fresh_rule.conditions.get("max_limit"), 50)
 
         # Evaluation for malicious agent still fails closed
-        malicious_ctx = TrustedAgentContext(agent_id="malicious_agent_override")
+        malicious_ctx = authenticated_test_context("malicious_agent_override")
         req_malicious = PolicyEvaluationRequest(
             agent_context=malicious_ctx,
             tool_name="search_customer_records",

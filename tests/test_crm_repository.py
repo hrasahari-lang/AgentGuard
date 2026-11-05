@@ -19,6 +19,7 @@ from backend.app.crm_repository import (
     get_invocation_counts,
     get_total_invocations,
 )
+from tests.context_fixtures import authenticated_test_context
 
 
 class TestCrmRepositoryMilestone1(unittest.TestCase):
@@ -29,10 +30,10 @@ class TestCrmRepositoryMilestone1(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "test_crm.db"
         init_db(self.db_path)
         self.repo = CrmRepository(self.db_path)
-        self.agent_1 = TrustedAgentContext(agent_id="agent_sales_1")
-        self.agent_2 = TrustedAgentContext(agent_id="agent_sales_2")
-        self.agent_3 = TrustedAgentContext(agent_id="agent_sales_3")
-        self.admin_agent = TrustedAgentContext(agent_id="admin_service", is_admin=True)
+        self.agent_1 = authenticated_test_context("agent_sales_1")
+        self.agent_2 = authenticated_test_context("agent_sales_2")
+        self.agent_3 = authenticated_test_context("agent_sales_3")
+        self.admin_agent = authenticated_test_context("admin_service", is_admin=True)
 
     def tearDown(self):
         # Allow Windows sqlite3 handles to release before removing temporary directory

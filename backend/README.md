@@ -2,7 +2,7 @@
 
 The MCP Streamable HTTP gateway is `backend.app.gateway.mcp_server:app`. It is built with the official MCP Python SDK v2 (`mcp==2.3.0`) and an ASGI bearer-authentication boundary.
 
-Run from the repository root after installing `requirements.txt`:
+Run from the repository root after installing the fully pinned Python 3.11 runtime/test dependency set in `requirements.txt`:
 
 ```powershell
 $env:AGENTGUARD_DB_PATH = "backend/data/agentguard.db"
@@ -18,4 +18,4 @@ Tools:
 - `get_customer(customer_id)` — reads a record within repository scope.
 - `export_customer_records(format, limit)` — sales-agent exports require approval up to 100 records and are denied above 100; neither state executes the export.
 
-Every allowed tool call first persists its policy decision, then runs the protected CRM operation, then records execution success or failure. See the root README for setup and the security documents for the exact boundary and limitations.
+Every allowed tool call persists the decision, claims an idempotency key, persists execution start, runs the protected CRM operation, then records success/failure. Outcome-audit failures are marked separately when possible; otherwise the event remains STARTED/unknown and cannot be replayed with the same key. A caller can pass a stable `request_id` for retry deduplication; future mutating tools must require one. See the root README and security documents for remaining prototype limitations.

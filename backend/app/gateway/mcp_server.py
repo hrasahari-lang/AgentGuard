@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 import sqlite3
 import time
+import uuid
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
@@ -35,6 +38,8 @@ from backend.app.security.auth import (
     initialize_agent_registry,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _fallback_deny(context: TrustedAgentContext, tool: str, action: str, resource: str) -> PolicyDecision:
     return PolicyDecision(
@@ -55,6 +60,44 @@ def _fallback_deny(context: TrustedAgentContext, tool: str, action: str, resourc
     )
 
 
+def _request_fingerprint(
+    *, agent_id: str, tool_name: str, action: str, resource: str, parameters: dict[str, Any]
+) -> str:
+    payload = json.dumps(
+        {
+            "agent_id": agent_id,
+            "tool_name": tool_name,
+            "action": action,
+            "resource": resource,
+            "parameters": parameters,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _request_id_digest(request_id: str) -> str:
+    return hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+
+
+def _resolve_request_id(request_id: str | None, *, require_stable_key: bool = False) -> str:
+    if request_id is None:
+        if require_stable_key:
+            raise ToolError("A stable request_id is required for this protected operation.")
+        return uuid.uuid4().hex
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or len(request_id) > 128
+        or any(ord(ch) < 33 or ord(ch) > 126 for ch in request_id)
+    ):
+        raise ToolError("request_id must contain 1 to 128 printable ASCII characters.")
+    return request_id
+
+
 def _govern_and_execute(
     *,
     context: TrustedAgentContext,
@@ -65,8 +108,29 @@ def _govern_and_execute(
     action: str,
     parameters: dict[str, Any],
     operation,
+    request_id: str,
+    mcp_request_id: str,
 ) -> Any:
     resource = "crm:customers"
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or len(request_id) > 128
+        or any(ord(ch) < 33 or ord(ch) > 126 for ch in request_id)
+    ):
+        raise ToolError("The MCP request ID is invalid; the protected operation was not started.")
+    try:
+        persisted_request_id = _request_id_digest(request_id)
+        persisted_mcp_request_id = _request_id_digest(mcp_request_id)
+        request_hash = _request_fingerprint(
+            agent_id=context.agent_id,
+            tool_name=tool_name,
+            action=action,
+            resource=resource,
+            parameters=parameters,
+        )
+    except (TypeError, ValueError):
+        raise ToolError("The MCP request could not be safely identified; the protected operation was not started.") from None
     try:
         decision = policy_engine.evaluate(
             PolicyEvaluationRequest(
@@ -82,21 +146,50 @@ def _govern_and_execute(
 
     if decision.outcome == PolicyOutcome.DENY:
         try:
-            audit.record_decision(decision, "DENIED")
+            audit.record_decision(
+                decision, "DENIED", persisted_request_id, request_hash, persisted_mcp_request_id
+            )
         except Exception:
             raise ToolError("Request denied; audit persistence failed.") from None
         raise ToolError("Request denied by AgentGuard policy.")
     if decision.outcome == PolicyOutcome.REQUIRE_APPROVAL:
         try:
-            audit.record_decision(decision, "PENDING_APPROVAL")
+            audit.record_decision(
+                decision, "PENDING_APPROVAL", persisted_request_id, request_hash, persisted_mcp_request_id
+            )
         except Exception:
             raise ToolError("Request blocked; audit persistence failed.") from None
         raise ToolError("Request requires human approval; protected data was not accessed.")
 
     try:
-        event_id = audit.record_decision(decision, "STARTED")
+        event_id = audit.record_decision(
+            decision, "DECISION_RECORDED", persisted_request_id, request_hash, persisted_mcp_request_id
+        )
     except Exception:
-        raise ToolError("Request blocked because the authorization audit could not be saved.") from None
+        raise ToolError("Authorization decision could not be saved; execution did not start.") from None
+
+    try:
+        claimed, prior_status, same_request = audit.claim_request(
+            context.agent_id, persisted_request_id, request_hash, event_id
+        )
+    except Exception:
+        raise ToolError("Authorization was recorded, but idempotency could not be established; execution did not start.") from None
+    if not claimed:
+        rejected_as = "DUPLICATE_REQUEST" if same_request else "REQUEST_ID_CONFLICT"
+        try:
+            audit.mark_request_rejected(event_id, rejected_as)
+        except Exception:
+            raise ToolError("This request ID was already claimed; this invocation was not started.") from None
+        detail = "already used" if same_request else "reused for different request content"
+        raise ToolError(
+            f"Request ID {detail}; this invocation was not re-executed. "
+            f"Prior execution state: {prior_status or 'unknown'}."
+        )
+
+    try:
+        audit.mark_execution_started(event_id, context.agent_id, persisted_request_id)
+    except Exception:
+        raise ToolError("Execution-start audit could not be saved; the protected operation did not start.") from None
 
     try:
         result = operation(repository, context)
@@ -104,12 +197,26 @@ def _govern_and_execute(
         try:
             audit.record_outcome(event_id, "FAILED", type(error).__name__)
         except Exception:
-            raise ToolError("Protected operation failed; audit outcome could not be saved.") from None
-        raise ToolError("Protected operation failed.") from None
+            try:
+                audit.record_outcome_audit_failure(event_id)
+            except Exception:
+                logger.error("Execution outcome audit failed for event %s", event_id)
+            raise ToolError(
+                "The protected operation may have partially completed; its final audit status could not be confirmed. "
+                "Do not retry it with a new request ID."
+            ) from None
+        raise ToolError("The protected operation raised an error; partial effects may have occurred.") from None
     try:
         audit.record_outcome(event_id, "SUCCEEDED")
     except Exception:
-        raise ToolError("Protected operation completed, but its audit outcome could not be saved.") from None
+        try:
+            audit.record_outcome_audit_failure(event_id)
+        except Exception:
+            logger.error("Execution outcome audit failed for event %s", event_id)
+        raise ToolError(
+            "The protected operation completed, but its final audit status could not be confirmed. "
+            "Do not retry it with a new request ID."
+        ) from None
     return result
 
 
@@ -153,9 +260,12 @@ def create_gateway_app(
         ),
     )
 
-    @server.tool(description="Search synthetic CRM customer records within the authenticated agent's scope.")
-    async def search_customer_records(query: str, limit: int = 10) -> str:
+    @server.tool(description="Search scoped synthetic CRM records. Supply a stable request_id to deduplicate retries.")
+    async def search_customer_records(
+        ctx: Context, query: str, limit: int = 10, request_id: str | None = None
+    ) -> str:
         context = _current_context()
+        idempotency_id = _resolve_request_id(request_id)
         return await asyncio.to_thread(
             _govern_and_execute,
             context=context,
@@ -166,11 +276,16 @@ def create_gateway_app(
             action="search",
             parameters={"query": query, "limit": limit},
             operation=lambda repo, agent: json.dumps(repo.search_customer_records(query, agent, limit)),
+            request_id=idempotency_id,
+            mcp_request_id=ctx.request_id,
         )
 
-    @server.tool(description="Retrieve one synthetic CRM customer record within the authenticated agent's scope.")
-    async def get_customer(customer_id: str) -> str:
+    @server.tool(description="Retrieve a scoped synthetic CRM record. Supply a stable request_id to deduplicate retries.")
+    async def get_customer(
+        ctx: Context, customer_id: str, request_id: str | None = None
+    ) -> str:
         context = _current_context()
+        idempotency_id = _resolve_request_id(request_id)
         return await asyncio.to_thread(
             _govern_and_execute,
             context=context,
@@ -181,11 +296,16 @@ def create_gateway_app(
             action="read",
             parameters={"customer_id": customer_id},
             operation=lambda repo, agent: json.dumps(repo.get_customer_by_id(customer_id, agent)),
+            request_id=idempotency_id,
+            mcp_request_id=ctx.request_id,
         )
 
-    @server.tool(description="Export scoped synthetic CRM records; this action may be denied or require approval.")
-    async def export_customer_records(format: str = "json", limit: int = 100) -> str:
+    @server.tool(description="Export scoped records. Supply a stable request_id to deduplicate retries; policy may deny or require approval.")
+    async def export_customer_records(
+        ctx: Context, format: str = "json", limit: int = 100, request_id: str | None = None
+    ) -> str:
         context = _current_context()
+        idempotency_id = _resolve_request_id(request_id)
         return await asyncio.to_thread(
             _govern_and_execute,
             context=context,
@@ -196,6 +316,8 @@ def create_gateway_app(
             action="export",
             parameters={"format": format, "limit": limit},
             operation=lambda repo, agent: repo.export_customer_records(agent, format, limit),
+            request_id=idempotency_id,
+            mcp_request_id=ctx.request_id,
         )
 
     @server.custom_route("/api/overview", methods=["GET"], include_in_schema=False)
@@ -285,7 +407,7 @@ def create_gateway_app(
         json_response=True,
         max_request_body_size=1_048_576,
     )
-    authenticated = AgentAuthenticationMiddleware(mcp_app, AgentAuthenticator(resolved_path))
+    authenticated = AgentAuthenticationMiddleware(mcp_app, AgentAuthenticator(resolved_path), audit)
     return CORSMiddleware(
         authenticated,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

@@ -5,6 +5,7 @@ import asyncio
 import contextvars
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import sqlite3
@@ -16,22 +17,35 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backend.app.config import get_db_path
-from backend.app.crm_repository import TrustedAgentContext
+from backend.app.crm_repository import TrustedAgentContext, _TRUSTED_CONTEXT_AUTHORITY
+from backend.app.audit.audit_store import AuditStore
 
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
+_AGENT_PRINCIPAL_AUTHORITY = object()
+logger = logging.getLogger(__name__)
 _trusted_context: contextvars.ContextVar[TrustedAgentContext | None] = contextvars.ContextVar(
     "agentguard_trusted_context", default=None
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AgentPrincipal:
     agent_id: str
     is_admin: bool
 
+    def __init__(self, agent_id: str, is_admin: bool, *, _authority: object | None = None):
+        if _authority is not _AGENT_PRINCIPAL_AUTHORITY:
+            raise TypeError("AgentPrincipal can only be created by AgentAuthenticator")
+        object.__setattr__(self, "agent_id", agent_id)
+        object.__setattr__(self, "is_admin", is_admin)
+
     def to_trusted_context(self) -> TrustedAgentContext:
         """Construct trusted identity only from an active stored credential."""
-        return TrustedAgentContext(agent_id=self.agent_id, is_admin=self.is_admin)
+        return TrustedAgentContext(
+            agent_id=self.agent_id,
+            is_admin=self.is_admin,
+            _authority=_TRUSTED_CONTEXT_AUTHORITY,
+        )
 
 
 def initialize_agent_registry(db_path: str | Path | None = None) -> Path:
@@ -94,20 +108,35 @@ class AgentAuthenticator:
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = initialize_agent_registry(db_path)
 
-    def verify(self, token: str) -> AgentPrincipal | None:
+    def authenticate(self, token: str) -> tuple[AgentPrincipal | None, str | None]:
         if not isinstance(token, str) or not _TOKEN_PATTERN.fullmatch(token):
-            return None
+            return None, "MALFORMED_BEARER"
         candidate = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with closing(sqlite3.connect(self.db_path, timeout=15.0)) as conn:
             rows = conn.execute(
-                "SELECT agent_id, token_hash, is_admin FROM agent_credentials WHERE active=1"
+                "SELECT agent_id, token_hash, is_admin, active FROM agent_credentials"
             ).fetchall()
         match: AgentPrincipal | None = None
+        revoked = False
         # Compare every active hash to avoid disclosing which credential matched by position.
-        for agent_id, stored_hash, is_admin in rows:
+        for agent_id, stored_hash, is_admin, active in rows:
             if hmac.compare_digest(candidate, stored_hash):
-                match = AgentPrincipal(agent_id=agent_id, is_admin=bool(is_admin))
-        return match
+                if active:
+                    match = AgentPrincipal(
+                        agent_id=agent_id,
+                        is_admin=bool(is_admin),
+                        _authority=_AGENT_PRINCIPAL_AUTHORITY,
+                    )
+                else:
+                    revoked = True
+        if match is not None:
+            return match, None
+        return None, "REVOKED_CREDENTIAL" if revoked else "INVALID_TOKEN"
+
+    def verify(self, token: str) -> AgentPrincipal | None:
+        """Compatibility helper returning a principal only for active credentials."""
+        principal, _failure = self.authenticate(token)
+        return principal
 
 
 def current_trusted_context() -> TrustedAgentContext:
@@ -120,9 +149,22 @@ def current_trusted_context() -> TrustedAgentContext:
 class AgentAuthenticationMiddleware:
     """Authenticate every HTTP request before MCP routing or tool handlers."""
 
-    def __init__(self, app: ASGIApp, authenticator: AgentAuthenticator):
+    def __init__(self, app: ASGIApp, authenticator: AgentAuthenticator, audit: AuditStore):
         self.app = app
         self.authenticator = authenticator
+        self.audit = audit
+
+    async def _reject(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
+        try:
+            await asyncio.to_thread(self.audit.record_authentication_failure, reason)
+        except Exception:
+            # The request remains denied; fallback logging contains only a fixed category.
+            logger.error("Authentication failure audit could not be persisted (%s)", reason)
+        response = JSONResponse(
+            {"error": "unauthorized"}, status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        await response(scope, receive, send)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -131,19 +173,25 @@ class AgentAuthenticationMiddleware:
         authorization_headers = [
             value for key, value in scope.get("headers", []) if key.lower() == b"authorization"
         ]
-        authorization = (
-            authorization_headers[0].decode("latin-1") if len(authorization_headers) == 1 else ""
-        )
+        if not authorization_headers:
+            await self._reject(scope, receive, send, "MISSING_CREDENTIAL")
+            return
+        if len(authorization_headers) != 1:
+            await self._reject(scope, receive, send, "DUPLICATE_AUTHORIZATION")
+            return
+        authorization = authorization_headers[0].decode("latin-1")
         scheme, separator, credential = authorization.partition(" ")
         principal = None
-        if separator and scheme.lower() == "bearer" and credential and " " not in credential:
-            principal = await asyncio.to_thread(self.authenticator.verify, credential)
+        if not separator or scheme.lower() != "bearer" or not credential or " " in credential:
+            await self._reject(scope, receive, send, "MALFORMED_BEARER")
+            return
+        try:
+            principal, failure = await asyncio.to_thread(self.authenticator.authenticate, credential)
+        except Exception:
+            await self._reject(scope, receive, send, "CREDENTIAL_REGISTRY_FAILURE")
+            return
         if principal is None:
-            response = JSONResponse(
-                {"error": "unauthorized"}, status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            await response(scope, receive, send)
+            await self._reject(scope, receive, send, failure or "INVALID_TOKEN")
             return
 
         context = principal.to_trusted_context()
