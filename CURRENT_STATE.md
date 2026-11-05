@@ -36,7 +36,7 @@
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Branch `main`; base HEAD `d56fb53` includes remote commit `85eca75` via a merge preserving both histories. Milestone implementation changes are pending local checkpoint. Pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched and must not be included in the checkpoint.
+- **Git status:** Branch `main`, HEAD `63338c1` (`feat: add bearer credential authentication`), following `05ab4a8` (`feat: add governed MCP gateway and dashboard MVP`). Both commits descend from merge `d56fb53`, which preserves remote commit `85eca75`. Implementation is committed locally. The pre-existing untracked `M2_FINAL_SECURITY_REVIEW.md` remains untouched.
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
 - **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
 - **Python environment:** Python 3.11; `mcp==2.3.0` and HTTP runtime dependencies installed in `.venv` and pinned directly in `requirements.txt` for the gateway. Tests use standard-library `unittest`.
@@ -118,6 +118,6 @@ M3 uses prototype registry authentication, not OAuth/SSO. Human approvals, dynam
 
 ## 6. Next Exact Task
 
-1. Commit the verified local M3/M4/M5 and read-only dashboard milestone, excluding the pre-existing independent review file.
-2. Run the documented local backend + dashboard demo from a clean setup.
-3. Continue with human approval/replay protection; do not begin deployment until asked and production auth/database are resolved.
+1. Reproduce the documented backend + dashboard demo locally with an admin credential.
+2. Implement human approval and replay protection as M6.
+3. Push the local commits only after GitHub authentication is established and the authenticated account's write permission to the exact origin is verified.
