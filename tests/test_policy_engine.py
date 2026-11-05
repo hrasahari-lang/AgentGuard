@@ -16,6 +16,7 @@ Covers all Milestone 2 requirements:
 - Absence of protected tool execution during policy evaluation
 """
 import unittest
+from dataclasses import FrozenInstanceError
 
 from backend.app.crm_repository import TrustedAgentContext
 from backend.app.policy_engine import (
@@ -639,15 +640,17 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
         self.assertIsNotNone(rule)
 
         # 1. Direct mutation of frozen PolicyRule raises FrozenInstanceError (AttributeError)
-        with self.assertRaises((AttributeError, Exception)):
+        with self.assertRaises(FrozenInstanceError):
             rule.outcome = PolicyOutcome.DENY  # type: ignore
 
-        with self.assertRaises((AttributeError, Exception)):
+        with self.assertRaises(FrozenInstanceError):
             rule.enabled = False  # type: ignore
 
-        # 2. Mutating inner mutable containers on retrieved copy does not affect engine
-        rule.target_agents.append("malicious_agent_override")
-        rule.conditions["max_limit"] = 999999
+        # 2. Nested containers are immutable on the rule itself.
+        with self.assertRaises(AttributeError):
+            rule.target_agents.append("malicious_agent_override")
+        with self.assertRaises(TypeError):
+            rule.conditions["max_limit"] = 999999
 
         # Re-fetch from engine: internal rule remains unmodified
         fresh_rule = self.engine.get_policy("POL-SALES-SEARCH-ALLOW")
@@ -689,9 +692,87 @@ class TestPolicyEngineMilestone2(unittest.TestCase):
 
         # 4. list_policies returns independent copies
         listed = custom_engine.list_policies()
-        listed[0].target_agents.append("another_tamper")
+        with self.assertRaises(AttributeError):
+            listed[0].target_agents.append("another_tamper")
         stored_again = custom_engine.get_policy("MUTABLE-TEST")
         self.assertNotIn("another_tamper", stored_again.target_agents)
+
+    def test_malformed_action_resource_and_parameters_fail_closed(self):
+        for kwargs in (
+            {"action": {"name": "read"}},
+            {"resource": ["crm:customers"]},
+            {"resource": "   "},
+            {"resource": "*"},
+            {"resource": "crm: customers"},
+            {"action": " "},
+            {"action": "read*"},
+            {"parameters": ["limit", 10]},
+        ):
+            request = PolicyEvaluationRequest(
+                agent_context=self.admin_agent,
+                tool_name="search_customer_records",
+                **kwargs,
+            )
+            decision = self.engine.evaluate(request)
+            self.assertEqual(decision.outcome, PolicyOutcome.DENY, kwargs)
+            self.assertIsNone(decision.policy_id, kwargs)
+
+    def test_policy_condition_schema_is_validated(self):
+        invalid_conditions = (
+            ({"max_limit": "high"}, TypeError),
+            ({"min_limit": 10, "max_limit": 5}, ValueError),
+            ({"allowed_formats": "csv"}, TypeError),
+            ({"allowed_formats": ["csv", 3]}, TypeError),
+            ({"exact_parameters": []}, TypeError),
+            ({"parameter_prefix": {"customer_id": 42}}, TypeError),
+            ({"unrecognized_condition": True}, ValueError),
+            ({"max_limit": float("nan")}, TypeError),
+            ({"exact_parameters": {"value": object()}}, TypeError),
+        )
+        for conditions, error_type in invalid_conditions:
+            with self.subTest(conditions=conditions), self.assertRaises(error_type):
+                PolicyRule(
+                    policy_id="INVALID-CONDITION", name="Invalid", description="test",
+                    outcome=PolicyOutcome.ALLOW, conditions=conditions,
+                )
+
+        mutable_prefix = {"customer_id": "CUST-"}
+        rule = PolicyRule(
+            policy_id="NESTED-CONDITION", name="Nested", description="test",
+            outcome=PolicyOutcome.ALLOW,
+            conditions={"parameter_prefix": mutable_prefix},
+        )
+        mutable_prefix["customer_id"] = "ATTACKER-"
+        self.assertEqual(rule.conditions["parameter_prefix"]["customer_id"], "CUST-")
+        with self.assertRaises(TypeError):
+            rule.conditions["parameter_prefix"]["customer_id"] = "ATTACKER-"
+
+    def test_audit_serialization_returns_detached_summary(self):
+        request = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={"query": "Acme", "limit": 10, "nested": {"items": ["safe"]}},
+        )
+        decision = self.engine.evaluate(request)
+        serialized = decision.to_dict()
+        serialized["evaluated_parameters_summary"]["nested"]["items"][0] = "tampered"
+        self.assertEqual(
+            decision.evaluated_parameters_summary["nested"]["items"][0], "safe"
+        )
+
+    def test_inline_secret_values_are_redacted(self):
+        request = PolicyEvaluationRequest(
+            agent_context=self.agent_sales_1,
+            tool_name="search_customer_records",
+            parameters={
+                "note": "operator used password=hunter2 and api_key:sk-live-123",
+                "header": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9",
+            },
+        )
+        summary = self.engine.evaluate(request).to_dict()["evaluated_parameters_summary"]
+        self.assertNotIn("hunter2", str(summary))
+        self.assertNotIn("sk-live-123", str(summary))
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", str(summary))
 
     # 16. Regression: M2-M-01 Resource Wildcard Boundary
     def test_finding_m2_m01_resource_wildcard_boundary(self):

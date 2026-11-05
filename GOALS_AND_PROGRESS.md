@@ -23,7 +23,7 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 |---|---|---|---|
 | **Milestone 0** | Environment & Workspace Verification | **COMPLETE** | Python 3.11, pip, Node.js, Git verified; workspace constrained to `C:\Users\nunna\Desktop\GURDAI1`; clean `.venv` created. |
 | **Milestone 1** | Database & Protected Synthetic CRM | **COMPLETE** | SQLite schema, idempotent seeding, RFC 2606 safe domains, parameterized SQL queries, server-side resource scoping, atomic pre-committed invocation counters, WAL mode, 15s timeout, 11/11 unit tests passing. |
-| **Milestone 2** | Deterministic Policy Engine (without MCP) | **COMPLETE** | Pure deterministic rule engine, explicit outcomes (ALLOW, REQUIRE_APPROVAL, DENY), verified `TrustedAgentContext` requirement, tool argument spoofing resistance, deterministic precedence, fail-closed default, zero CRM execution during evaluation. Hardened per M2 security review: frozen immutable `PolicyRule`, deep copies on get/list, exact wildcard prefix `crm:*`, explicit resource scoping without implicit aliasing, limit condition fail-closed, and recursive audit parameter redaction. 20 policy tests (31/31 total suite passing). |
+| **Milestone 2** | Deterministic Policy Engine (without MCP) | **FINAL SECURITY REMEDIATION VERIFIED** | Pure deterministic rule engine, explicit outcomes, trusted context requirement, deterministic precedence, default deny, no CRM execution during evaluation. Final remediation validates action/resource syntax and all condition schemas; recursively freezes rule targets/conditions; detaches serialized audit summaries; redacts labeled inline secrets; precise exception assertions. 24 policy tests; 35 total tests (final full-suite result recorded in `CURRENT_STATE.md`). |
 | **Milestone 3** | MCP Streamable HTTP Gateway | **PENDING** | Official MCP Python SDK v2, HTTP Bearer token authentication boundary, session identity mapping, tool registration, protected credential isolation. |
 | **Milestone 4** | Controlled Execution & Audit Engine | **PENDING** | Single executor routing, audit logging, separate decision vs. execution recording, failure recording without rolling back decision logs. |
 | **Milestone 5** | External Agent Integration | **PENDING** | Standalone agent client connecting over MCP Streamable HTTP, discovering tools and executing governed operations. |
@@ -86,8 +86,16 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
   - M2-M-04: Recursive parameter sanitization protects against nested credential leaks in audit logs.
   - M2-L-02: Target list items validated as strings at rule construction time.
 - [x] **Test Verification:**
-  - 20 automated unit tests in `tests/test_policy_engine.py` (14 foundational + 6 targeted security regression tests).
-  - Total test suite: 31 tests passing in ~0.65s.
+  - 24 automated unit tests in `tests/test_policy_engine.py`, including final M2 remediation regressions.
+  - Total test suite: 35 tests; final full-suite evidence is recorded in `CURRENT_STATE.md`.
+
+- [x] **Final M2 Security Review Findings:**
+  - Malformed action/resource identifiers and non-dictionary parameters fail closed.
+  - Policy conditions accept only known keys and validated types/ranges.
+  - Rule targets are tuples and nested conditions are recursively immutable.
+  - `PolicyDecision.to_dict()` returns a detached summary.
+  - Audit strings redact labeled inline credentials and bearer tokens in addition to sensitive-key redaction.
+  - Immutability tests assert specific exception types instead of broad `Exception`.
 
 ---
 

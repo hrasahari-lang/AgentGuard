@@ -10,7 +10,11 @@ Enforces deterministic, explainable, zero-trust authorization decisions:
 import copy
 from dataclasses import dataclass, field, replace
 from enum import Enum
+import math
+import re
 import time
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, Dict, List, Optional, Set, Union
 
 from backend.app.crm_repository import TrustedAgentContext
@@ -21,6 +25,60 @@ class PolicyOutcome(str, Enum):
     ALLOW = "ALLOW"
     REQUIRE_APPROVAL = "REQUIRE_APPROVAL"
     DENY = "DENY"
+
+
+class FrozenDict(Mapping):
+    """Small recursively immutable mapping used for policy condition data."""
+    __slots__ = ("_data",)
+
+    def __init__(self, values):
+        object.__setattr__(self, "_data", MappingProxyType({key: _freeze(value) for key, value in values.items()}))
+
+    def __setattr__(self, name, value):
+        raise TypeError("policy condition mappings are immutable")
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def _freeze(value):
+    if isinstance(value, Mapping):
+        return FrozenDict(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_freeze(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _is_immutable_json_value(value, depth=0):
+    if depth > 5:
+        return False
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, Mapping):
+        return all(isinstance(key, str) and _is_immutable_json_value(item, depth + 1) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return all(_is_immutable_json_value(item, depth + 1) for item in value)
+    return False
+
+
+def _is_finite_number(value):
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
 
 
 class RiskLevel(str, Enum):
@@ -82,7 +140,7 @@ class PolicyDecision:
             "action": self.action,
             "resource": self.resource,
             "timestamp": self.timestamp,
-            "evaluated_parameters_summary": self.evaluated_parameters_summary,
+            "evaluated_parameters_summary": copy.deepcopy(self.evaluated_parameters_summary),
         }
 
 
@@ -122,33 +180,44 @@ class PolicyRule:
                 object.__setattr__(self, "risk_level", RiskLevel[self.risk_level.upper()])
             else:
                 object.__setattr__(self, "risk_level", RiskLevel.LOW)
-        if not isinstance(self.target_agents, list):
-            raise TypeError("target_agents must be a list of strings")
-        for a in self.target_agents:
-            if not isinstance(a, str):
-                raise TypeError(f"target_agents items must be strings, got {type(a).__name__}")
-        if not isinstance(self.target_roles, list):
-            raise TypeError("target_roles must be a list of strings")
-        for r in self.target_roles:
-            if not isinstance(r, str):
-                raise TypeError(f"target_roles items must be strings, got {type(r).__name__}")
-        if not isinstance(self.target_tools, list):
-            raise TypeError("target_tools must be a list of strings")
-        for t in self.target_tools:
-            if not isinstance(t, str):
-                raise TypeError(f"target_tools items must be strings, got {type(t).__name__}")
-        if not isinstance(self.target_actions, list):
-            raise TypeError("target_actions must be a list of strings")
-        for act in self.target_actions:
-            if not isinstance(act, str):
-                raise TypeError(f"target_actions items must be strings, got {type(act).__name__}")
-        if not isinstance(self.target_resources, list):
-            raise TypeError("target_resources must be a list of strings")
-        for res in self.target_resources:
-            if not isinstance(res, str):
-                raise TypeError(f"target_resources items must be strings, got {type(res).__name__}")
-        if not isinstance(self.conditions, dict):
+        for field_name in ("target_agents", "target_roles", "target_tools", "target_actions", "target_resources"):
+            values = getattr(self, field_name)
+            if not isinstance(values, (list, tuple)) or not all(isinstance(item, str) for item in values):
+                raise TypeError(f"{field_name} must contain only strings")
+            object.__setattr__(self, field_name, tuple(values))
+        if not isinstance(self.conditions, Mapping):
             raise TypeError("conditions must be a dictionary")
+        _validate_conditions(self.conditions)
+        object.__setattr__(self, "conditions", FrozenDict(self.conditions))
+
+
+def _validate_conditions(conditions):
+    allowed = {"min_limit", "max_limit", "allowed_formats", "exact_parameters", "parameter_prefix"}
+    unknown = set(conditions) - allowed
+    if unknown:
+        raise ValueError(f"unsupported policy condition(s): {sorted(map(str, unknown))}")
+    for key in ("min_limit", "max_limit"):
+        value = conditions.get(key)
+        if key in conditions and (not _is_finite_number(value) or value < 0):
+            raise TypeError(f"{key} must be a non-negative number")
+    if "min_limit" in conditions and "max_limit" in conditions and conditions["min_limit"] > conditions["max_limit"]:
+        raise ValueError("min_limit cannot exceed max_limit")
+    if "allowed_formats" in conditions and (
+        not isinstance(conditions["allowed_formats"], (list, tuple))
+        or not all(isinstance(value, str) and value for value in conditions["allowed_formats"])
+    ):
+        raise TypeError("allowed_formats must be a list of non-empty strings")
+    for key in ("exact_parameters", "parameter_prefix"):
+        if key in conditions and not isinstance(conditions[key], Mapping):
+            raise TypeError(f"{key} must be a mapping")
+    if "parameter_prefix" in conditions and not all(isinstance(k, str) and isinstance(v, str) for k, v in conditions["parameter_prefix"].items()):
+        raise TypeError("parameter_prefix keys and values must be strings")
+    if "exact_parameters" in conditions and not all(isinstance(k, str) for k in conditions["exact_parameters"]):
+        raise TypeError("exact_parameters keys must be strings")
+    if "exact_parameters" in conditions and not all(
+        _is_immutable_json_value(value) for value in conditions["exact_parameters"].values()
+    ):
+        raise TypeError("exact_parameters values must be bounded JSON values")
 
 
 def get_default_policies() -> List[PolicyRule]:
@@ -264,6 +333,11 @@ def get_default_policies() -> List[PolicyRule]:
 _SENSITIVE_KEY_SUBSTRINGS = frozenset(
     ("password", "secret", "token", "key", "auth", "credential", "bearer", "private")
 )
+_INLINE_SECRET_PATTERN = re.compile(
+    r"(?i)(\b(?:\w*password\w*|\w*secret\w*|\w*token\w*|\w*api[-_]?key\w*|\w*credential\w*|authorization)\b\s*[:=]\s*)([^\s,;]+)"
+)
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_IDENTIFIER_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,127}\Z")
 
 
 def _sanitize_parameters(obj: Any, depth: int = 0) -> Any:
@@ -276,7 +350,7 @@ def _sanitize_parameters(obj: Any, depth: int = 0) -> Any:
     """
     if depth > 5:
         return "[REDACTED-DEPTH]"
-    if isinstance(obj, dict):
+    if isinstance(obj, Mapping):
         sanitized = {}
         for k, v in obj.items():
             k_str = str(k).lower()
@@ -288,8 +362,11 @@ def _sanitize_parameters(obj: Any, depth: int = 0) -> Any:
         return [_sanitize_parameters(item, depth + 1) for item in obj]
     if isinstance(obj, set):
         return [_sanitize_parameters(item, depth + 1) for item in sorted(obj, key=str)]
-    if isinstance(obj, str) and len(obj) > 1000:
-        return obj[:1000] + "...[TRUNCATED]"
+    if isinstance(obj, str):
+        obj = _BEARER_PATTERN.sub("Bearer [REDACTED]", obj)
+        obj = _INLINE_SECRET_PATTERN.sub(r"\1[REDACTED]", obj)
+        if len(obj) > 1000:
+            return obj[:1000] + "...[TRUNCATED]"
     return obj
 
 
@@ -407,10 +484,31 @@ class PolicyEngine:
                 evaluated_parameters_summary={},
             )
 
-        action = str(request.action or "read").strip().lower()
-        resource = str(request.resource or "crm:customers").strip().lower()
+        if (not isinstance(request.action, str) or not request.action.strip()
+                or not isinstance(request.resource, str) or not request.resource.strip()
+                or not isinstance(request.parameters, dict)):
+            return PolicyDecision(
+                outcome=PolicyOutcome.DENY, allowed=False, requires_approval=False, denied=True,
+                policy_id=None, rule_name=None,
+                reason="Malformed action, resource, or parameters; default deny enforced",
+                risk_level=RiskLevel.HIGH, agent_id=agent_id,
+                tool_name=request.tool_name.strip(), action="INVALID", resource="INVALID",
+                timestamp=now, evaluated_parameters_summary={},
+            )
+
+        action = request.action.strip().lower()
+        resource = request.resource.strip().lower()
         tool_name = request.tool_name.strip()
-        params = request.parameters if isinstance(request.parameters, dict) else {}
+        if not _IDENTIFIER_PATTERN.fullmatch(action) or not _IDENTIFIER_PATTERN.fullmatch(resource):
+            return PolicyDecision(
+                outcome=PolicyOutcome.DENY, allowed=False, requires_approval=False, denied=True,
+                policy_id=None, rule_name=None,
+                reason="Malformed action or resource identifier; default deny enforced",
+                risk_level=RiskLevel.HIGH, agent_id=agent_id, tool_name=tool_name,
+                action="INVALID", resource="INVALID", timestamp=now,
+                evaluated_parameters_summary={},
+            )
+        params = request.parameters
 
         # Recursively sanitize parameters for summary (redacting secrets across nested levels)
         param_summary = _sanitize_parameters(params)
@@ -564,7 +662,7 @@ class PolicyEngine:
         has_limit_condition = "max_limit" in conditions or "min_limit" in conditions
         if has_limit_condition:
             limit_val = params.get("limit")
-            if limit_val is None or not isinstance(limit_val, (int, float)) or isinstance(limit_val, bool):
+            if not _is_finite_number(limit_val):
                 return False  # Fail closed: required limit condition cannot be evaluated
             if "max_limit" in conditions and limit_val > conditions["max_limit"]:
                 return False
