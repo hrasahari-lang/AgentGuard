@@ -11,7 +11,12 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.config import DEFAULT_CORS_ORIGINS, get_cors_origins
+from backend.app.config import (
+    DEFAULT_CORS_ORIGINS,
+    DEFAULT_MCP_ALLOWED_HOSTS,
+    get_cors_origins,
+    get_mcp_allowed_hosts,
+)
 from backend.app.gateway.mcp_server import create_gateway_app
 from backend.app.security.auth import (
     AgentAuthenticator,
@@ -44,6 +49,40 @@ class TestCorsOriginConfiguration(unittest.TestCase):
                 os.environ, {"AGENTGUARD_CORS_ORIGINS": value}
             ), self.assertRaises(ValueError):
                 get_cors_origins()
+
+
+class TestMcpHostConfiguration(unittest.TestCase):
+    def test_default_allowlist_has_local_development_and_the_configured_render_host(self):
+        with patch.dict(os.environ):
+            os.environ.pop("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS", None)
+            hosts = get_mcp_allowed_hosts()
+        self.assertEqual(hosts, list(DEFAULT_MCP_ALLOWED_HOSTS))
+        self.assertIn("agentguard-api-g87x.onrender.com", hosts)
+
+    def test_configured_mcp_hostnames_are_exact_and_canonical(self):
+        with patch.dict(os.environ, {
+            "AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS": "gateway.example.com,agentguard.example.net",
+        }):
+            hosts = get_mcp_allowed_hosts()
+        self.assertIn("gateway.example.com", hosts)
+        self.assertIn("agentguard.example.net", hosts)
+        self.assertNotIn("*.example.com", hosts)
+        self.assertNotIn("agentguard-api-g87x.onrender.com", hosts)
+
+    def test_mcp_host_allowlist_rejects_wildcards_urls_ports_and_noncanonical_names(self):
+        for value in (
+            "*.example.com",
+            "https://gateway.example.com",
+            "gateway.example.com:443",
+            "gateway.example.com.",
+            "Gateway.example.com",
+            "gateway.example.com,",
+            "gateway.example.com,gateway.example.com",
+        ):
+            with self.subTest(value=value), patch.dict(
+                os.environ, {"AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS": value}
+            ), self.assertRaises(ValueError):
+                get_mcp_allowed_hosts()
 
 
 class TestEnvironmentCredentialBootstrap(unittest.TestCase):

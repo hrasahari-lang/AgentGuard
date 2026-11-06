@@ -91,8 +91,18 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         sock.listen()
         self.port = sock.getsockname()[1]
         self.url = f"http://127.0.0.1:{self.port}/mcp"
+        with patch.dict(os.environ, {
+            "AGENTGUARD_CORS_ORIGINS": (
+                "http://localhost:5173,http://127.0.0.1:5173,"
+                "https://agent-guard-duo-x.vercel.app"
+            ),
+        }):
+            os.environ.pop("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS", None)
+            gateway_app = create_gateway_app(
+                self.db_path, auth_failure_limiter=self.auth_failure_limiter
+            )
         self.server = uvicorn.Server(uvicorn.Config(
-            create_gateway_app(self.db_path, auth_failure_limiter=self.auth_failure_limiter),
+            gateway_app,
             host="127.0.0.1", port=self.port,
             log_level="critical", lifespan="on", proxy_headers=False,
         ))
@@ -127,7 +137,11 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
     def _raw_request(self, method, path, headers=(), body=b""):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
         try:
-            connection.putrequest(method, path)
+            connection.putrequest(
+                method,
+                path,
+                skip_host=any(name.lower() == "host" for name, _value in headers),
+            )
             for name, value in headers:
                 connection.putheader(name, value)
             connection.endheaders(body)
@@ -448,6 +462,46 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
             app, "OPTIONS", "/mcp", denied_headers
         )
         self.assertNotIn("access-control-allow-origin", response_headers)
+
+    def test_mcp_transport_accepts_configured_render_host_and_rejects_untrusted_host_or_origin(self):
+        initialize_body = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "host-allowlist-test", "version": "1.0.0"},
+            },
+        }).encode("utf-8")
+        trusted_headers = (
+            ("Host", "agentguard-api-g87x.onrender.com"),
+            ("Origin", "https://agent-guard-duo-x.vercel.app"),
+            ("Authorization", f"Bearer {self.token}"),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json, text/event-stream"),
+            ("Content-Length", str(len(initialize_body))),
+        )
+
+        status, body = self._raw_request("POST", "/mcp", trusted_headers, initialize_body)
+        self.assertEqual(status, 200, body.decode("utf-8", errors="replace"))
+        self.assertEqual(json.loads(body)["result"]["protocolVersion"], "2025-11-25")
+
+        untrusted_host = tuple(
+            (name, "attacker.example.com" if name.lower() == "host" else value)
+            for name, value in trusted_headers
+        )
+        status, body = self._raw_request("POST", "/mcp", untrusted_host, initialize_body)
+        self.assertEqual(status, 421)
+        self.assertEqual(body, b"Invalid Host header")
+
+        untrusted_origin = tuple(
+            (name, "https://attacker.example.com" if name.lower() == "origin" else value)
+            for name, value in trusted_headers
+        )
+        status, body = self._raw_request("POST", "/mcp", untrusted_origin, initialize_body)
+        self.assertEqual(status, 403)
+        self.assertEqual(body, b"Invalid Origin header")
 
     def test_every_admin_endpoint_enforces_auth_and_excludes_sensitive_data(self):
         self._call_tool("search_customer_records", {"query": "Acme", "limit": 5}, self.token)

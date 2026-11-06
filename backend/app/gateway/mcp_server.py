@@ -15,13 +15,14 @@ from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backend.app.audit.audit_store import AuditStore
-from backend.app.config import get_cors_origins, get_db_path
+from backend.app.config import get_cors_origins, get_db_path, get_mcp_allowed_hosts
 from backend.app.crm_repository import CrmRepository, TrustedAgentContext
 from backend.app.database import init_db
 from backend.app.policy_engine import (
@@ -267,6 +268,8 @@ def create_gateway_app(
     auth_request_limiter: AuthenticationRequestRateLimiter | None = None,
 ) -> ASGIApp:
     """Create the Starlette ASGI app with request auth ahead of the MCP endpoint."""
+    cors_origins = get_cors_origins()
+    mcp_allowed_hosts = get_mcp_allowed_hosts()
     resolved_path = get_db_path(db_path)
     init_db(resolved_path)
     initialize_agent_registry(resolved_path)
@@ -429,6 +432,11 @@ def create_gateway_app(
         stateless_http=True,
         json_response=True,
         max_request_body_size=1_048_576,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=mcp_allowed_hosts,
+            allowed_origins=cors_origins,
+        ),
     )
     authenticated = AgentAuthenticationMiddleware(
         mcp_app,
@@ -439,7 +447,7 @@ def create_gateway_app(
     )
     return CORSMiddleware(
         _HealthzBypass(authenticated),
-        allow_origins=get_cors_origins(),
+        allow_origins=cors_origins,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=[
             "Authorization",

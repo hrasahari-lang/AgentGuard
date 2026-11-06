@@ -22,6 +22,8 @@ For hosted bootstrap, set both `AGENTGUARD_BOOTSTRAP_ADMIN_TOKEN` and `AGENTGUAR
 
 The CORS allowlist permits only the required browser headers for bearer authentication and MCP Streamable HTTP: Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id, and Last-Event-ID. Protocol header support does not broaden the configured origin allowlist.
 
+The MCP SDK's DNS-rebinding protection also checks the request `Host` and `Origin`. The gateway keeps that protection enabled, allows loopback development hosts, and explicitly allows the current Render hostname `agentguard-api-g87x.onrender.com`. For another deployment hostname, set `AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS` to a comma-separated list of exact lowercase DNS hostnames (no scheme, port, path, or wildcard). The MCP transport's Origin allowlist is derived from the same exact `AGENTGUARD_CORS_ORIGINS` setting. Unapproved Host and Origin values are rejected; do not disable transport security to work around host errors.
+
 Tools:
 
 - `search_customer_records(query, limit)` — sales-agent search is allowed within policy limits.

@@ -15,6 +15,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DATA_DIR = PROJECT_ROOT / "backend" / "data"
 DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "crm.db"
 DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+DEFAULT_MCP_ALLOWED_HOSTS = (
+    "127.0.0.1:*",
+    "localhost:*",
+    "[::1]:*",
+    "agentguard-api-g87x.onrender.com",
+)
 
 
 def get_cors_origins() -> list[str]:
@@ -85,6 +91,43 @@ def get_cors_origins() -> list[str]:
             raise ValueError("AGENTGUARD_CORS_ORIGINS must not contain duplicate origins")
         origins.append(canonical)
     return origins
+
+
+def get_mcp_allowed_hosts() -> list[str]:
+    """Return exact MCP Host header names plus loopback-only development patterns."""
+    raw = os.getenv("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS")
+    if raw is None:
+        remote_hosts = [DEFAULT_MCP_ALLOWED_HOSTS[-1]]
+    else:
+        if not raw.strip():
+            raise ValueError("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS must contain at least one hostname")
+        remote_hosts = []
+        for hostname in raw.split(","):
+            if (
+                hostname != hostname.strip()
+                or hostname != hostname.lower()
+                or len(hostname) > 253
+                or hostname.endswith(".")
+            ):
+                raise ValueError("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS must contain canonical hostnames")
+            labels = hostname.split(".")
+            if len(labels) < 2 or any(
+                not label
+                or len(label) > 63
+                or not label[0].isascii()
+                or not label[0].isalnum()
+                or not label[-1].isascii()
+                or not label[-1].isalnum()
+                or any(not char.isascii() or not (char.isalnum() or char == "-") for char in label)
+                for label in labels
+            ) or all(label.isdigit() for label in labels):
+                raise ValueError(
+                    "AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS must contain exact DNS hostnames without schemes or ports"
+                )
+            if hostname in remote_hosts:
+                raise ValueError("AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS must not contain duplicates")
+            remote_hosts.append(hostname)
+    return [*DEFAULT_MCP_ALLOWED_HOSTS[:-1], *remote_hosts]
 
 
 @dataclass(frozen=True)

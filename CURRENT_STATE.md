@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** Agent Playground implemented and locally verified; hosted deployment verification pending
+**Stage:** Agent Playground implemented; Render MCP Host/Origin allowlist fix implemented locally and awaiting deployment verification
 
 ---
 
@@ -38,6 +38,7 @@
 - **AG-03 — fixed locally:** production dashboard origins require HTTPS on the default port and an exact hostname in build-time `VITE_AGENTGUARD_ALLOWED_API_HOSTS`; loopback HTTP is accepted only for development. Request failures (including 401/403, server errors and network errors) clear privileged data, connection credentials and timestamps. Regression coverage verifies these boundaries.
 - Live demo configuration now supports exact CORS origins through `AGENTGUARD_CORS_ORIGINS`, a non-sensitive unauthenticated `GET /healthz`, and paired startup credentials for `agent_admin` / `agent_sales_1` stored in SQLite only as SHA-256 hashes.
 - The Agent Playground uses `@modelcontextprotocol/client@2.4.0` for Streamable HTTP initialization, live tool discovery, and authenticated search, customer lookup, and policy-controlled export calls. It rejects redirects, sends the separate demo token only to `/mcp`, refreshes the admin overview/audit after each tool attempt, and correlates the decision using the hashed request ID returned in audit data.
+- **Hosted MCP connection error diagnosis:** the screenshot's `Invalid Host header` came from the MCP SDK's DNS-rebinding protection defaulting to localhost `allowed_hosts`; hosted POST requests were rejected although CORS OPTIONS preflight succeeded. The app now passes explicit strict `TransportSecuritySettings`: loopback development patterns, the exact current Render hostname, optional canonical hostnames from `AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS`, and exact origins from `AGENTGUARD_CORS_ORIGINS`. DNS-rebinding checks remain enabled. Regression evidence covers successful initialization on the configured Render host and rejection of unapproved hostnames/origins. This fix is local until deployed and checked against the live endpoint.
 - Requested demo URLs: frontend `https://agent-guard-duo-x.vercel.app`; backend `https://agentguard-api-g87x.onrender.com`. These URLs and the deployment itself have not yet been independently verified after this code change.
 - Keep the Render `AGENTGUARD_DB_PATH` pointed at its existing persistent disk. Confirm the Render start command binds `0.0.0.0` and uses the service `PORT`; application-level ingress limits remain process-local and need an upstream limit. No credential values were provisioned or printed, and no dependencies were installed.
 - Verification for this configuration: full backend suite **85 tests passed in 16.982s**; frontend **5 tests passed**; `npm run typecheck`, `npm run build`, `python -B -m compileall -q backend tests demo`, and `git diff --check` all exited 0.
@@ -126,6 +127,14 @@ Diff Check: `git diff --check` — **exit code 0**.
 - New frontend regressions exercise MCP initialization, tool discovery, bearer attachment, same-origin redirect rejection, input validation, ALLOW/DENY/REQUIRE_APPROVAL classification, audit decision correlation, and error redaction. The gateway regression confirms MCP protocol headers are CORS-allowed only for the exact configured frontend origin.
 - The hosted Agent Playground has not yet been verified with a real demo-agent credential; no credentials were accessed or printed during this local verification.
 
+### MCP Host/Origin allowlist fix (2026-11-06)
+
+- Diagnosed the screenshot's `Invalid Host header`: MCP Python SDK v2 was enforcing DNS-rebinding protection with localhost-only Host defaults; its CORS preflight succeeds independently, but the actual POST is rejected.
+- `backend/app/gateway/mcp_server.py` now supplies explicit `TransportSecuritySettings` with protection enabled, exact approved Host names, and Origin values from the exact CORS configuration. Current Render hostname is approved; future hostnames must be listed in `AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS`.
+- New regression tests cover accepted Render host + frontend origin, rejected unknown Host/Origin, canonical allowlist parsing, and wildcard/scheme/port rejection.
+- Targeted tests: **4 passed**. Full backend suite: `python -B -m unittest discover -s tests -v` — **Ran 89 tests in 30.663s — OK**. Python compileall and `git diff --check` — exit code 0.
+- This fix is not yet deployed. Verify MCP initialization and tool discovery against Render after publication; do not treat health or CORS preflight alone as success.
+
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
 2. `test_counter_persistence_on_failure` — ok
@@ -178,4 +187,4 @@ M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs rema
 
 ## 6. Next Exact Task
 
-Next: publish the verified source commit, let Vercel and Render deploy, then verify the hosted CORS preflight and use the separately provisioned demo-agent token in the Agent Playground. Confirm search and customer lookup ALLOW, export DENY/REQUIRE_APPROVAL outcomes, refreshed audit decisions, and unchanged invocation counters for blocked calls. Do not treat a successful health response as proof of authenticated gateway behavior.
+Next: publish the verified MCP Host/Origin allowlist fix and let Render deploy. Then verify live MCP initialization/tool discovery using the demo-agent credential and confirm search/customer lookup ALLOW, export DENY/REQUIRE_APPROVAL, refreshed audit decisions, and unchanged invocation counters for blocked calls. Do not treat a successful health response or CORS preflight alone as proof of authenticated gateway behavior.

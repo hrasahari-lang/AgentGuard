@@ -103,4 +103,6 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 
 ## 5. Current Next Action
 
-Next task: deploy the published frontend/backend source and verify hosted MCP CORS, token authentication, tool discovery, ALLOW/DENY/REQUIRE_APPROVAL behavior and audit refresh using a separately provisioned demo-agent credential. Preserve persistent DB configuration and ingress controls.
+Latest issue: hosted MCP POST returned `Invalid Host header`. The MCP SDK was applying its localhost-only DNS-rebinding Host default; a local fix now explicitly allows the exact Render host and configured CORS origins without disabling that protection. Regression coverage verifies successful MCP initialization on the approved host and rejection of unknown hostnames/origins.
+
+Next task: publish this fix and allow Render to deploy it, then verify authenticated MCP tool discovery and ALLOW/DENY/REQUIRE_APPROVAL behavior with the separately provisioned demo-agent credential. Preserve persistent DB configuration and ingress controls.
