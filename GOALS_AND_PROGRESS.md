@@ -23,15 +23,17 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 |---|---|---|---|
 | **Milestone 0** | Environment & Workspace Verification | **COMPLETE** | Python 3.11, pip, Node.js, Git verified; workspace constrained to `C:\Users\nunna\Desktop\GURDAI1`; clean `.venv` created. |
 | **Milestone 1** | Database & Protected Synthetic CRM | **COMPLETE** | SQLite schema, idempotent seeding, RFC 2606 safe domains, parameterized SQL queries, server-side resource scoping, atomic pre-committed invocation counters, WAL mode, 15s timeout, 11/11 unit tests passing. |
-| **Milestone 2** | Deterministic Policy Engine (without MCP) | **FINAL SECURITY REMEDIATION VERIFIED** | Pure deterministic rule engine, explicit outcomes, trusted context requirement, deterministic precedence, default deny, no CRM execution during evaluation. Final remediation validates action/resource syntax and all condition schemas; recursively freezes rule targets/conditions; detaches serialized audit summaries; redacts labeled inline secrets; precise exception assertions. The suite had 45 tests at M2 finalization; subsequent security and agent regressions bring the current total to 56 (`CURRENT_STATE.md`). |
+| **Milestone 2** | Deterministic Policy Engine (without MCP) | **FINAL SECURITY REMEDIATION VERIFIED** | Pure deterministic rule engine, explicit outcomes, trusted context requirement, deterministic precedence, default deny, no CRM execution during evaluation. Final remediation validates action/resource syntax and all condition schemas; recursively freezes rule targets/conditions; detaches serialized audit summaries; redacts labeled inline secrets; precise exception assertions. The suite had 45 tests at M2 finalization; subsequent security and agent regressions bring the current total to 65 (`CURRENT_STATE.md`). |
 | **Milestone 3** | MCP Streamable HTTP Gateway | **COMPLETE (local prototype; security remediation verified)** | Explicit pinned MCP v2 dependencies; pre-routing bearer validation; trusted contexts only from verified credential principals; categorized auth-failure audit; all admin endpoints tested by identity class. |
-| **Milestone 4** | Controlled Execution & Audit Engine | **COMPLETE (local prototype; security remediation verified)** | Separate decision/start/completion phases; request-ID and hash-bound idempotency; ambiguous outcomes surfaced and replay blocked. Current full suite: 56 tests, including the preserved 45-test baseline. |
+| **Milestone 4** | Controlled Execution & Audit Engine | **COMPLETE (local prototype; security remediation verified)** | Separate decision/start/completion phases; request-ID and hash-bound idempotency; ambiguous outcomes surfaced and replay blocked. Current full suite: 65 tests, including the preserved 45-test baseline. |
 | **Milestone 5** | External Agent Integration | **COMPLETE (SDK demos)** | Separate official-SDK MCP client demonstrates ALLOW/DENY; minimal managed task agent discovers and invokes the governed search tool; subprocess regression proves request-ID replay does not repeat the protected operation. Broader agent framework integrations remain future work. |
 | **Milestone 6** | Dynamic Policies & Human Approvals | **PENDING** | Admin policy API, one-time approval tokens, replay protection, cryptographic request hash binding, revalidation before execution. |
 | **Milestone 7** | Enterprise Admin UI & Polish | **LOCAL MVP COMPLETE** | React + TypeScript read-only dashboard uses authenticated live backend APIs for telemetry, agents, policies, and audit. Production deployment/polish remain pending. |
 | **Milestone 8** | Render Workflows & Public Deployment | **PENDING** | Render Web Services (FastAPI + MCP gateway), Render Static Sites (React frontend), Render PostgreSQL, Render Workflows integration. |
 
-**Overall Progress:** M0–M5 complete for the local prototype; independent security remediation Stage 1 and managed-agent Stage 2 are verified with 56 tests. M6/M8 remain pending. No dashboard changes were made. Do not begin another milestone without instruction.
+**Overall Progress:** M0–M5 complete for the local prototype; independent security remediation Stage 1, managed-agent Stage 2, and AG-01–AG-03 security remediation are verified locally with 65 backend tests and 4 frontend security tests. M6/M8 remain pending. The AG-03 change is a security-only gateway-origin boundary, not a dashboard redesign. Public deployment remains pending and is not yet safe.
+
+**Immediate independent-review findings:** AG-01 endpoint credential leakage, AG-02 authentication-failure flooding, and AG-03 dashboard token exfiltration to arbitrary hosts are fixed and regression-tested locally. The in-process rate limiter is bounded but does not protect against distributed attacks. No credential provisioning, commit, push, or deployment was performed.
 
 ---
 
@@ -87,7 +89,7 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
   - M2-L-02: Target list items validated as strings at rule construction time.
 - [x] **Test Verification:**
   - 25 automated unit tests in `tests/test_policy_engine.py`, including final M2 remediation regressions and concurrent registry updates.
-  - Total test suite at M2 finalization: 45 tests; later gateway and managed-agent regression tests bring the current full suite to 56 (`CURRENT_STATE.md`).
+  - Total test suite at M2 finalization: 45 tests; later gateway, managed-agent, and independent-review regressions bring the current full suite to 65 (`CURRENT_STATE.md`).
 
 - [x] **Final M2 Security Review Findings:**
   - Malformed action/resource identifiers and non-dictionary parameters fail closed.
@@ -101,4 +103,4 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 
 ## 5. Current Next Action
 
-The requested independent-review remediation and minimal managed MCP task agent are complete and verified locally. The next planned milestone remains dynamic policies and human approvals (M6); do not start it until instructed. No deployment, UI feature work, or GitHub push was performed as part of this task.
+AG-01–AG-03 security remediation is verified locally. Next task: assess and implement only approved deployment prerequisites for explicit production CORS, platform `0.0.0.0`/`PORT` binding, persistent storage, secure credential provisioning against the same database, and upstream rate limiting. Do not deploy or expose the public backend until those requirements are met and deployment is authorized.

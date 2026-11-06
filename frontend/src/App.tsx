@@ -1,5 +1,11 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import {
+  clearPrivilegedSessionOnAuthFailure,
+  GatewayAuthenticationError,
+  requestGatewayJson,
+  resolveGatewayOrigin,
+} from "./gatewaySecurity";
 
 type Page = "overview" | "agents" | "policies" | "audit";
 type Overview = {
@@ -39,7 +45,10 @@ type AuditEvent = {
   timestamp: number;
 };
 type DashboardData = { overview: Overview; agents: Agent[]; policies: Policy[]; events: AuditEvent[] };
-type Connection = { baseUrl: string; token: string };
+type Connection = { token: string };
+type GatewayStatus = "unavailable" | "checking" | "connected";
+
+const GATEWAY_ORIGIN = resolveGatewayOrigin(import.meta.env.VITE_AGENTGUARD_API_ORIGIN);
 
 const NAV: { id: Page; label: string; mark: string }[] = [
   { id: "overview", label: "Overview", mark: "◫" },
@@ -48,39 +57,12 @@ const NAV: { id: Page; label: string; mark: string }[] = [
   { id: "audit", label: "Audit log", mark: "≋" },
 ];
 
-async function requestJson<T>(baseUrl: string, token: string, path: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-  });
-  const body = (await response.json().catch(() => ({}))) as { error?: string } & T;
-  if (!response.ok) {
-    if (response.status === 401) throw new Error("Authentication failed. Check the admin credential.");
-    if (response.status === 403) throw new Error("This credential does not have the admin role.");
-    throw new Error(body.error ?? `AgentGuard returned HTTP ${response.status}.`);
-  }
-  return body;
-}
-
-function normalizeBase(value: string): string {
-  const parsed = new URL(value.trim());
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
-    throw new Error("Use HTTPS for a remote gateway. Plain HTTP is allowed only for localhost.");
-  }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error("Enter the gateway origin only; credentials, query strings and fragments are not accepted.");
-  }
-  let path = parsed.pathname.replace(/\/$/, "");
-  if (path.endsWith("/mcp")) path = path.slice(0, -4);
-  return `${parsed.origin}${path}`;
-}
-
 function App() {
   const [page, setPage] = useState<Page>("overview");
-  const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:8000");
   const [token, setToken] = useState("");
   const [connection, setConnection] = useState<Connection | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("unavailable");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -89,18 +71,29 @@ function App() {
 
   const loadDashboard = async (target: Connection) => {
     setLoading(true);
+    setGatewayStatus("checking");
     setError("");
     try {
       const [overview, agentResponse, policyResponse, auditResponse] = await Promise.all([
-        requestJson<Overview>(target.baseUrl, target.token, "/api/overview"),
-        requestJson<{ agents: Agent[] }>(target.baseUrl, target.token, "/api/agents"),
-        requestJson<{ policies: Policy[] }>(target.baseUrl, target.token, "/api/policies"),
-        requestJson<{ events: AuditEvent[] }>(target.baseUrl, target.token, "/api/audit?limit=250"),
+        requestGatewayJson<Overview>(GATEWAY_ORIGIN, target.token, "/api/overview"),
+        requestGatewayJson<{ agents: Agent[] }>(GATEWAY_ORIGIN, target.token, "/api/agents"),
+        requestGatewayJson<{ policies: Policy[] }>(GATEWAY_ORIGIN, target.token, "/api/policies"),
+        requestGatewayJson<{ events: AuditEvent[] }>(GATEWAY_ORIGIN, target.token, "/api/audit?limit=250"),
       ]);
       setData({ overview, agents: agentResponse.agents, policies: policyResponse.policies, events: auditResponse.events });
       setConnection(target);
+      setGatewayStatus("connected");
       setLastUpdated(new Date());
     } catch (caught) {
+      setGatewayStatus("unavailable");
+      if (caught instanceof GatewayAuthenticationError) {
+        clearPrivilegedSessionOnAuthFailure(caught.status, () => {
+          setData(null);
+          setConnection(null);
+          setToken("");
+          setLastUpdated(null);
+        });
+      }
       setError(caught instanceof Error ? caught.message : "Could not load AgentGuard data.");
       throw caught;
     } finally {
@@ -111,7 +104,8 @@ function App() {
   const connect = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     try {
-      const target = { baseUrl: normalizeBase(baseUrl), token: token.trim() };
+      if (!GATEWAY_ORIGIN.origin) throw new Error(GATEWAY_ORIGIN.error ?? "Gateway origin is not configured.");
+      const target = { token: token.trim() };
       if (!target.token) throw new Error("Enter an admin bearer credential.");
       await loadDashboard(target);
       setToken("");
@@ -144,12 +138,12 @@ function App() {
           <h1>Govern every<br/><span>tool call.</span></h1>
           <p className="connect-copy">Connect to your AgentGuard gateway with an admin credential. Data comes directly from the protected service.</p>
           <form className="connect-form" onSubmit={connect}>
-            <label>Gateway URL<input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8000" autoComplete="url"/></label>
+            <div className="configured-gateway"><span>TRUSTED GATEWAY ORIGIN</span><code>{GATEWAY_ORIGIN.origin ?? "Not configured"}</code></div>
             <label>Admin bearer credential<input value={token} onChange={(event) => setToken(event.target.value)} type="password" placeholder="Paste the token shown once at issuance" autoComplete="off"/></label>
-            <button className="button-primary" disabled={loading}>{loading ? <><span className="spinner"/> Connecting…</> : <>Connect to gateway <span>→</span></>}</button>
+            <button className="button-primary" disabled={loading || !GATEWAY_ORIGIN.origin}>{loading ? <><span className="spinner"/> Connecting…</> : <>Connect to gateway <span>→</span></>}</button>
           </form>
-          {error && <div className="error-banner" role="alert"><span>!</span>{error}</div>}
-          <div className="connect-foot"><span className="status-dot"/> Credential stays in this tab's memory and is cleared when you disconnect.</div>
+          {(error || GATEWAY_ORIGIN.error) && <div className="error-banner" role="alert"><span>!</span>{error || GATEWAY_ORIGIN.error}</div>}
+          <div className="connect-foot">Credential stays in this tab's memory and is cleared when you disconnect.</div>
         </div>
         <aside className="connect-side"><div className="side-grid"/><div className="side-content"><span className="side-kicker">ZERO-TRUST GOVERNANCE</span><h2>Agents move fast.<br/>Access stays governed.</h2><p>Identify → Authorize → Analyze → Decide → Execute → Audit</p><div className="side-note"><span>⌁</span><div><strong>Live policy enforcement</strong><small>Only gateway-routed calls are governed.</small></div></div></div><div className="side-version">AGENTGUARD CONSOLE <span>·</span> LOCAL PROTOTYPE</div></aside>
       </main>
@@ -169,11 +163,11 @@ function App() {
         <nav className="main-nav" aria-label="Dashboard sections">{NAV.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}><span className="nav-mark">{item.mark}</span>{item.label}{item.id === "audit" && overview.audit_event_count > 0 && <span className="nav-count">{overview.audit_event_count}</span>}</button>)}</nav>
         <div className="sidebar-spacer"/>
         <div className="pipeline-card"><div className="pipeline-icon">⌁</div><div className="pipeline-label">ENFORCEMENT PIPELINE</div><div className="pipeline-flow">Identify <span>→</span> Decide <span>→</span> Audit</div><div className="pipeline-caption">Every protected call, governed.</div></div>
-        <div className="profile-row"><div className="profile-avatar">AG</div><div className="profile-copy"><strong>Workspace admin</strong><small>Connected securely</small></div><button className="logout-button" onClick={() => { setConnection(null); setData(null); setToken(""); setError(""); }} aria-label="Disconnect admin session">↗</button></div>
+        <div className="profile-row"><div className="profile-avatar">AG</div><div className="profile-copy"><strong>Workspace admin</strong><small>{gatewayStatus === "connected" ? GATEWAY_ORIGIN.origin : "Gateway unavailable"}</small></div><button className="logout-button" onClick={() => { setConnection(null); setData(null); setToken(""); setLastUpdated(null); setGatewayStatus("unavailable"); setError(""); }} aria-label="Disconnect admin session">↗</button></div>
       </aside>
 
       <main className="main-panel">
-        <header className="topbar"><div className="breadcrumb">AgentGuard <span>/</span> <strong>{NAV.find((item) => item.id === page)?.label}</strong></div><div className="top-actions"><span className="live-status"><i/> GATEWAY CONNECTED</span><button className="icon-button" onClick={refresh} disabled={loading} aria-label="Refresh data">↻</button><button className="admin-chip"><span>SA</span> Admin</button></div></header>
+        <header className="topbar"><div className="breadcrumb">AgentGuard <span>/</span> <strong>{NAV.find((item) => item.id === page)?.label}</strong></div><div className="top-actions"><span className="live-status"><i/> GATEWAY {gatewayStatus.toUpperCase()} <code title={GATEWAY_ORIGIN.origin ?? "Gateway origin not configured"}>{GATEWAY_ORIGIN.origin ?? "origin missing"}</code></span><button className="icon-button" onClick={refresh} disabled={loading} aria-label="Refresh data">↻</button><button className="admin-chip"><span>SA</span> Admin</button></div></header>
         {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}>Dismiss</button></div>}
         <div className="page-wrap">
           <div className="page-heading"><div><div className="eyebrow">GOVERNANCE / {page.toUpperCase()}</div><h1>{page === "overview" ? "Security overview" : page === "agents" ? "Connected agents" : page === "policies" ? "Policy registry" : "Audit trail"}</h1><p>{page === "overview" ? "A live view of the access decisions protecting your data." : page === "agents" ? "Identities and credential status from the active registry." : page === "policies" ? "Deterministic rules currently loaded by the gateway." : "Persistent policy decisions and protected resource outcomes."}</p></div><div className="heading-actions"><span className="updated-label">{lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Live data"}</span><button className="button-secondary" onClick={refresh} disabled={loading}><span className={loading ? "spin" : ""}>↻</span> Refresh</button></div></div>

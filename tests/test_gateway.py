@@ -29,7 +29,13 @@ from backend.app.crm_repository import CrmRepository, get_total_invocations
 from backend.app.gateway.mcp_server import create_gateway_app
 from backend.app.gateway.mcp_server import _resolve_request_id
 from mcp.server.mcpserver.exceptions import ToolError
-from backend.app.security.auth import AgentAuthenticator, AgentPrincipal, issue_agent_token, revoke_agent_credentials
+from backend.app.security.auth import (
+    AgentAuthenticator,
+    AgentPrincipal,
+    AuthenticationFailureRateLimiter,
+    issue_agent_token,
+    revoke_agent_credentials,
+)
 from backend.app.crm_repository import TrustedAgentContext
 
 
@@ -43,6 +49,9 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
 
         init_db(self.db_path)
         self.token = issue_agent_token("agent_sales_1", db_path=self.db_path)
+        self.auth_failure_limiter = AuthenticationFailureRateLimiter(
+            max_failures=20, window_seconds=60, max_client_buckets=16
+        )
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
@@ -50,8 +59,9 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         self.port = sock.getsockname()[1]
         self.url = f"http://127.0.0.1:{self.port}/mcp"
         self.server = uvicorn.Server(uvicorn.Config(
-            create_gateway_app(self.db_path), host="127.0.0.1", port=self.port,
-            log_level="critical", lifespan="on",
+            create_gateway_app(self.db_path, auth_failure_limiter=self.auth_failure_limiter),
+            host="127.0.0.1", port=self.port,
+            log_level="critical", lifespan="on", proxy_headers=False,
         ))
         self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [sock]}, daemon=True)
         self.thread.start()
@@ -181,6 +191,25 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
             status, _body = self._raw_request("GET", "/api/overview")
         self.assertEqual(status, 401)
         self.assertEqual(get_total_invocations(self.db_path), 0)
+
+    def test_authentication_failures_are_rate_limited_before_audit_and_valid_auth_still_works(self):
+        statuses = [self._raw_request("GET", "/api/overview")[0] for _ in range(20)]
+        self.assertEqual(statuses, [401] * 20)
+        # Forwarded headers are untrusted and cannot create a fresh limiter bucket.
+        limited_status, _ = self._raw_request(
+            "GET", "/api/overview", [("X-Forwarded-For", "198.51.100.99")]
+        )
+        self.assertEqual(limited_status, 429)
+
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM authentication_failure_events"
+            ).fetchone()[0]
+        self.assertEqual(count, 20)
+
+        # A valid credential remains usable even when its peer has exhausted the failure bucket.
+        result = self._call_tool("search_customer_records", {"query": "Acme", "limit": 10}, self.token)
+        self.assertFalse(result.is_error)
 
     def test_allow_executes_and_deny_never_reaches_crm(self):
         allowed = self._call_tool(

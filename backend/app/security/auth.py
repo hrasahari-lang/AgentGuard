@@ -5,18 +5,23 @@ import asyncio
 import contextvars
 import hashlib
 import hmac
+import ipaddress
 import logging
 import re
 import secrets
 import sqlite3
+import threading
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from contextlib import closing
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from backend.app.config import get_db_path
+from backend.app.config import get_auth_failure_settings, get_db_path
 from backend.app.crm_repository import TrustedAgentContext, _TRUSTED_CONTEXT_AUTHORITY
 from backend.app.audit.audit_store import AuditStore
 
@@ -113,25 +118,20 @@ class AgentAuthenticator:
             return None, "MALFORMED_BEARER"
         candidate = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with closing(sqlite3.connect(self.db_path, timeout=15.0)) as conn:
-            rows = conn.execute(
-                "SELECT agent_id, token_hash, is_admin, active FROM agent_credentials"
-            ).fetchall()
-        match: AgentPrincipal | None = None
-        revoked = False
-        # Compare every active hash to avoid disclosing which credential matched by position.
-        for agent_id, stored_hash, is_admin, active in rows:
-            if hmac.compare_digest(candidate, stored_hash):
-                if active:
-                    match = AgentPrincipal(
-                        agent_id=agent_id,
-                        is_admin=bool(is_admin),
-                        _authority=_AGENT_PRINCIPAL_AUTHORITY,
-                    )
-                else:
-                    revoked = True
-        if match is not None:
-            return match, None
-        return None, "REVOKED_CREDENTIAL" if revoked else "INVALID_TOKEN"
+            row = conn.execute(
+                "SELECT agent_id, token_hash, is_admin, active FROM agent_credentials WHERE token_hash=?",
+                (candidate,),
+            ).fetchone()
+        if row is None or not hmac.compare_digest(candidate, row[1]):
+            return None, "INVALID_TOKEN"
+        agent_id, stored_hash, is_admin, active = row
+        if not active:
+            return None, "REVOKED_CREDENTIAL"
+        return AgentPrincipal(
+            agent_id=agent_id,
+            is_admin=bool(is_admin),
+            _authority=_AGENT_PRINCIPAL_AUTHORITY,
+        ), None
 
     def verify(self, token: str) -> AgentPrincipal | None:
         """Compatibility helper returning a principal only for active credentials."""
@@ -149,12 +149,44 @@ def current_trusted_context() -> TrustedAgentContext:
 class AgentAuthenticationMiddleware:
     """Authenticate every HTTP request before MCP routing or tool handlers."""
 
-    def __init__(self, app: ASGIApp, authenticator: AgentAuthenticator, audit: AuditStore):
+    def __init__(
+        self,
+        app: ASGIApp,
+        authenticator: AgentAuthenticator,
+        audit: AuditStore,
+        failure_limiter: "AuthenticationFailureRateLimiter | None" = None,
+    ):
         self.app = app
         self.authenticator = authenticator
         self.audit = audit
+        settings = get_auth_failure_settings()
+        self.failure_limiter = failure_limiter or AuthenticationFailureRateLimiter(
+            max_failures=settings.max_failures,
+            window_seconds=settings.window_seconds,
+            max_client_buckets=settings.max_client_buckets,
+        )
+
+    @staticmethod
+    def _peer_identity(scope: Scope) -> str:
+        """Use only the transport peer; forwarded headers are intentionally ignored."""
+        client = scope.get("client")
+        if not isinstance(client, (tuple, list)) or not client:
+            return "unknown"
+        try:
+            return ipaddress.ip_address(str(client[0])).compressed
+        except ValueError:
+            return "unknown"
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
+        allowed, retry_after = self.failure_limiter.allow(self._peer_identity(scope))
+        if not allowed:
+            response = JSONResponse(
+                {"error": "too_many_authentication_failures"},
+                status_code=429,
+                headers={"Retry-After": str(max(1, ceil(retry_after)))},
+            )
+            await response(scope, receive, send)
+            return
         try:
             await asyncio.to_thread(self.audit.record_authentication_failure, reason)
         except Exception:
@@ -200,3 +232,46 @@ class AgentAuthenticationMiddleware:
             await self.app(scope, receive, send)
         finally:
             _trusted_context.reset(token)
+
+
+class AuthenticationFailureRateLimiter:
+    """Bounded per-process sliding-window limiter keyed by the socket peer address."""
+
+    def __init__(
+        self,
+        *,
+        max_failures: int,
+        window_seconds: int,
+        max_client_buckets: int,
+        clock=time.monotonic,
+    ) -> None:
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (
+            max_failures, window_seconds, max_client_buckets
+        )):
+            raise ValueError("authentication failure limits must be positive integers")
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self.max_client_buckets = max_client_buckets
+        self._clock = clock
+        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def allow(self, peer_identity: str) -> tuple[bool, float]:
+        """Record one failed attempt and return whether its sanitized audit may be written."""
+        now = self._clock()
+        key = peer_identity if isinstance(peer_identity, str) and peer_identity else "unknown"
+        with self._lock:
+            failures = self._failures.get(key)
+            if failures is None:
+                failures = deque()
+                self._failures[key] = failures
+            cutoff = now - self.window_seconds
+            while failures and failures[0] <= cutoff:
+                failures.popleft()
+            self._failures.move_to_end(key)
+            while len(self._failures) > self.max_client_buckets:
+                self._failures.popitem(last=False)
+            if len(failures) >= self.max_failures:
+                return False, max(0.0, failures[0] + self.window_seconds - now)
+            failures.append(now)
+            return True, 0.0

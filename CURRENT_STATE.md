@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** Independent security remediation and managed-agent integration — verified locally
+**Stage:** AG-01–AG-03 immediate security remediation — verified locally, not deployed
 
 ---
 
@@ -33,13 +33,19 @@
 - `httpx2` is intentional for MCP SDK v2. `requirements.txt` pins the complete Python 3.11 runtime/test dependency set, including direct `mcp`, `httpx2`, and `uvicorn` imports. Tests use standard-library `unittest`.
 - An admin-authenticated read-only React + TypeScript dashboard loads real overview counts, agents, policies, and audit rows from backend APIs. No metrics are simulated. The admin token is held in browser memory only.
 - The M3/M4/M5 backend and local dashboard milestone changes are implemented and verified. This remains a local prototype: authentication is a local bearer-token registry, not OAuth; approval handling, dynamic policy editing, production deployment, and Render Workflows remain outstanding.
+- **AG-01 — fixed and regression-tested locally:** both MCP demo clients share a strict endpoint validator; remote HTTP, unsupported schemes, malformed URLs, embedded credentials and ambiguous host forms fail before an HTTP client is constructed. Loopback HTTP and remote HTTPS are accepted.
+- **AG-02 — bounded locally, not distributed protection:** authentication failures are limited to 20 per transport peer per 60 seconds by default before auth-failure audit writes; peer buckets are capped at 4,096; only the newest 10,000 sanitized auth-failure rows are retained. Invalid token hashes use the unique indexed lookup. The provided Uvicorn launcher disables proxy-header rewriting. An upstream ingress limiter remains required against distributed attacks and shared reverse-proxy peer addresses.
+- **AG-03 — fixed and regression-tested locally:** the dashboard uses only build-time `VITE_AGENTGUARD_API_ORIGIN`, rejects invalid/insecure/noncanonical settings, has no editable gateway URL, blocks absolute cross-origin API paths and redirects, keeps the token in memory, clears privileged state on 401/403, and displays the configured origin and current gateway status.
+- Latest verification after these changes: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v` — **65 tests passed in 16.222s**; Python compileall exit 0; frontend `npm test` — **4 passed**; `npm run typecheck` and `npm run build` exit 0; `git diff --check` exit 0.
+- No dependencies were installed. No credential was provisioned. No commit, push, or deployment was performed.
+- Public deployment remains blocked pending production CORS allowlisting, `0.0.0.0`/platform `PORT` binding, durable database configuration, same-database admin credential provisioning, and upstream rate limiting. The local registry is not OAuth/SSO.
 
 ---
 
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Branch `main`; Stage 1 and managed-agent work are committed locally. Existing untracked `M2_FINAL_SECURITY_REVIEW.md`, `AgentGuard_Audit.zip`, and `AgentGuard_Audit/` remain untouched and excluded from commits. No push was made.
+- **Git status:** Branch `main`; AG-01–AG-03 changes are uncommitted. Existing untracked `M2_FINAL_SECURITY_REVIEW.md`, `AgentGuard_Audit.zip`, and `AgentGuard_Audit/` remain untouched. No commit or push was made.
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
 - **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
 - **Python environment:** Python 3.11; `mcp==2.3.0` and HTTP runtime dependencies installed in `.venv` and pinned directly in `requirements.txt` for the gateway. Tests use standard-library `unittest`.
@@ -65,6 +71,14 @@
 - `DECISIONS.md`, `CURRENT_STATE.md`, `GOALS_AND_PROGRESS.md`
 - No application dashboard or frontend files changed.
 
+### Independent review findings AG-01–AG-03
+
+- `demo/endpoint_validation.py`, `demo/managed_agent.py`, `demo/external_agent.py`, `tests/test_agent_endpoint.py`
+- `backend/app/config.py`, `backend/app/security/auth.py`, `backend/app/audit/audit_store.py`, `backend/app/gateway/mcp_server.py`, `backend/app/run_gateway.py`
+- `tests/test_auth_failure_controls.py`, `tests/test_gateway.py`
+- `frontend/src/gatewaySecurity.ts`, `frontend/src/App.tsx`, `frontend/src/vite-env.d.ts`, `frontend/src/styles.css`, `frontend/tests/gatewaySecurity.test.mjs`, `frontend/package.json`, `frontend/.env.example`
+- `.env.example`, `backend/README.md`, `demo/README.md`, `SECURITY_RULES.md`, `SYSTEM_ARCHITECTURE.md`, `DECISIONS.md`, `CURRENT_STATE.md`, `GOALS_AND_PROGRESS.md`
+
 ---
 
 ## 4. Actual Test Results
@@ -83,6 +97,15 @@ Compilation: clean-environment `python -B -m compileall -q backend tests demo` �
 Frontend type check: `npm run typecheck` — **exit code 0**.
 Frontend production build: `npm run build` — **exit code 0**.
 Diff Check: `git diff --check` — **exit code 0**.
+
+### Latest AG-01–AG-03 verification (2026-11-06)
+
+- Full backend suite: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v` — **Ran 65 tests in 16.222s — OK**, exit code 0.
+- Python compilation: `.\.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — exit code 0.
+- Frontend security tests: `npm test` — **4 passed**, exit code 0.
+- Frontend typecheck: `npm run typecheck` — exit code 0.
+- Frontend production build: `npm run build` — exit code 0.
+- `git diff --check` — exit code 0 (Git emitted only configured LF-to-CRLF advisory warnings).
 
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
@@ -136,4 +159,4 @@ M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs rema
 
 ## 6. Next Exact Task
 
-The requested remediation and managed-agent demonstration are complete. Do not begin M6, add UI features, or push to GitHub until instructed.
+AG-01–AG-03 remediation is verified locally. Next, review and implement only the minimum approved deployment-readiness changes: explicit backend CORS origins, platform bind/port handling, durable storage, secure same-database admin credential provisioning, and trusted ingress rate limiting. Do not expose a public backend or deploy until those requirements and approval are satisfied. No feature milestone, commit, push, credential provisioning, or deployment was performed.

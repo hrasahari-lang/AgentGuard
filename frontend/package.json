@@ -4,7 +4,7 @@
   "description": "AgentGuard admin dashboard",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",

@@ -8,13 +8,26 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from backend.app.config import get_db_path
+from backend.app.config import get_auth_failure_settings, get_db_path
 from backend.app.policy_engine import PolicyDecision
 
 
 class AuditStore:
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        auth_failure_retention: int | None = None,
+    ):
         self.db_path = get_db_path(db_path)
+        retention = (
+            get_auth_failure_settings().retention_events
+            if auth_failure_retention is None
+            else auth_failure_retention
+        )
+        if isinstance(retention, bool) or not isinstance(retention, int) or retention < 1:
+            raise ValueError("auth_failure_retention must be a positive integer")
+        self.auth_failure_retention = retention
         with closing(sqlite3.connect(self.db_path, timeout=15.0)) as conn:
             with conn:
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -52,6 +65,10 @@ class AuditStore:
                         )),
                         timestamp REAL NOT NULL
                     )"""
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_auth_failure_timestamp "
+                    "ON authentication_failure_events(timestamp)"
                 )
                 conn.execute(
                     """CREATE TABLE IF NOT EXISTS idempotency_requests (
@@ -167,6 +184,14 @@ class AuditStore:
                 conn.execute(
                     "INSERT INTO authentication_failure_events(event_id, failure_type, timestamp) VALUES (?, ?, ?)",
                     (uuid.uuid4().hex, failure_type, time.time()),
+                )
+                conn.execute(
+                    """DELETE FROM authentication_failure_events
+                       WHERE rowid NOT IN (
+                           SELECT rowid FROM authentication_failure_events
+                           ORDER BY timestamp DESC, rowid DESC LIMIT ?
+                       )""",
+                    (self.auth_failure_retention,),
                 )
 
     def record_outcome(self, event_id: str, status: str, error_type: str | None = None) -> None:

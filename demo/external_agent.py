@@ -10,10 +10,17 @@ import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from demo.endpoint_validation import EndpointValidationError, validate_mcp_endpoint
+
 
 async def run() -> int:
     token = os.getenv("AGENTGUARD_TOKEN")
     url = os.getenv("AGENTGUARD_MCP_URL", "http://127.0.0.1:8000/mcp")
+    try:
+        url = validate_mcp_endpoint(url)
+    except EndpointValidationError as exc:
+        print(f"Invalid AGENTGUARD_MCP_URL: {exc}", file=sys.stderr)
+        return 2
     if not token:
         print("Set AGENTGUARD_TOKEN to a provisioned gateway credential.", file=sys.stderr)
         return 2

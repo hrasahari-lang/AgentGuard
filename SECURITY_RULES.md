@@ -64,3 +64,11 @@ These rules are mandatory for the MVP. A feature is not complete if it violates 
 ## Known boundary
 
 AgentGuard only governs resources and tool operations routed through its enforcement boundary. Any direct credential or network path around the gateway is a bypass and must be removed or separately governed before claiming protection for that resource.
+
+## Authentication abuse controls
+
+- Validate MCP endpoint URLs before attaching bearer credentials. Permit plain HTTP only for canonical loopback hosts; remote endpoints require HTTPS.
+- Apply a bounded per-process sliding-window limit before writing authentication-failure audit rows. Key it only by the immediate transport peer; do not trust forwarded-IP headers unless an explicitly trusted proxy design is configured.
+- Bound the dedicated authentication-failure table by retention count without deleting policy or execution audit history. Store only a fixed failure category and timestamp.
+- The in-process limiter does not stop distributed attacks and may see all users as one peer behind a reverse proxy. Public deployments require upstream ingress rate limiting and an explicit proxy trust configuration.
+- The dashboard must take its gateway origin from `VITE_AGENTGUARD_API_ORIGIN`, not user-entered data. It must reject noncanonical/insecure configuration and clear privileged state after HTTP 401 or 403.
