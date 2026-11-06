@@ -133,7 +133,7 @@ Diff Check: `git diff --check` — **exit code 0**.
 - `backend/app/gateway/mcp_server.py` now supplies explicit `TransportSecuritySettings` with protection enabled, exact approved Host names, and Origin values from the exact CORS configuration. Current Render hostname is approved; future hostnames must be listed in `AGENTGUARD_MCP_SERVER_ALLOWED_HOSTS`.
 - New regression tests cover accepted Render host + frontend origin, rejected unknown Host/Origin, canonical allowlist parsing, and wildcard/scheme/port rejection.
 - Targeted tests: **4 passed**. Full backend suite: `python -B -m unittest discover -s tests -v` — **Ran 89 tests in 30.663s — OK**. Python compileall and `git diff --check` — exit code 0.
-- This fix is not yet deployed. Verify MCP initialization and tool discovery against Render after publication; do not treat health or CORS preflight alone as success.
+- Published to `origin/main` in commit `287e4b37378c15b7afbc8abea9df47eca47652c3`. Render rollout is not yet verified. Verify MCP initialization and tool discovery after the service deploys; do not treat health or CORS preflight alone as success.
 
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
@@ -187,4 +187,4 @@ M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs rema
 
 ## 6. Next Exact Task
 
-Next: publish the verified MCP Host/Origin allowlist fix and let Render deploy. Then verify live MCP initialization/tool discovery using the demo-agent credential and confirm search/customer lookup ALLOW, export DENY/REQUIRE_APPROVAL, refreshed audit decisions, and unchanged invocation counters for blocked calls. Do not treat a successful health response or CORS preflight alone as proof of authenticated gateway behavior.
+Next: confirm Render deployed `287e4b37378c15b7afbc8abea9df47eca47652c3`, then verify live MCP initialization/tool discovery using the demo-agent credential and confirm search/customer lookup ALLOW, export DENY/REQUIRE_APPROVAL, refreshed audit decisions, and unchanged invocation counters for blocked calls. Do not treat a successful health response or CORS preflight alone as proof of authenticated gateway behavior.

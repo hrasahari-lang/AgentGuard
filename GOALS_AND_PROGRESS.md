@@ -105,4 +105,4 @@ Progress is calculated strictly on **verified acceptance criteria**, supported b
 
 Latest issue: hosted MCP POST returned `Invalid Host header`. The MCP SDK was applying its localhost-only DNS-rebinding Host default; a local fix now explicitly allows the exact Render host and configured CORS origins without disabling that protection. Regression coverage verifies successful MCP initialization on the approved host and rejection of unknown hostnames/origins.
 
-Next task: publish this fix and allow Render to deploy it, then verify authenticated MCP tool discovery and ALLOW/DENY/REQUIRE_APPROVAL behavior with the separately provisioned demo-agent credential. Preserve persistent DB configuration and ingress controls.
+Published the fix to `origin/main` as `287e4b37378c15b7afbc8abea9df47eca47652c3`; Render rollout is awaiting verification. Next: confirm the deployed backend commit, then verify authenticated MCP tool discovery and ALLOW/DENY/REQUIRE_APPROVAL behavior with the separately provisioned demo-agent credential. Preserve persistent DB configuration and ingress controls.
