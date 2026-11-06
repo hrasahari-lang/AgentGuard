@@ -211,6 +211,14 @@ AgentGuard/
 └── source_material/
 ```
 
+## Browser Agent Playground
+
+The dashboard's Agent Playground is a browser MCP client, not a second execution path. It connects to the already-configured gateway origin at /mcp using the official TypeScript MCP SDK v2 Streamable HTTP transport. The browser performs the MCP handshake, discovers tools with tools/list, and sends tool calls with the separately entered demo-agent bearer credential. Redirects are rejected.
+
+The admin credential remains scoped to the control-plane APIs in the dashboard component. The demo-agent credential is masked, kept in the Agent Playground component and transport memory only, and cleared on disconnect or when leaving the page. It is never compiled into a Vite variable or sent to an admin API. All protected reads and export attempts still pass through gateway authentication, policy evaluation, controlled execution and audit.
+
+After each tool attempt the dashboard reloads its overview and audit APIs with the admin session. The client generates a request ID, the gateway persists only its digest, and the frontend correlates that digest with the refreshed audit result to display the recorded decision and execution status when present. Tool responses and errors are displayed from the MCP result; the page provides no policy editor or approval action.
+
 ## 11. Current MCP SDK decision
 
 As checked on 2026-11-06, the official Python MCP SDK v2 release page lists v2.3.0 as latest. The project pins `mcp==2.3.0`. The v2 API has breaking changes: `FastMCP` becomes `MCPServer`, and transport options move to `run()` / app methods. The gateway uses `MCPServer` and `streamable_http_app()`; it does not copy v1 `FastMCP` or SSE examples.

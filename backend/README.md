@@ -20,6 +20,8 @@ The app uses only the immediate socket peer and ignores forwarded-IP headers. `r
 
 For hosted bootstrap, set both `AGENTGUARD_BOOTSTRAP_ADMIN_TOKEN` and `AGENTGUARD_BOOTSTRAP_DEMO_AGENT_TOKEN` to distinct URL-safe secrets of at least 43 characters. On startup, the gateway idempotently registers `agent_admin` with the admin role and `agent_sales_1` as the demo agent. SQLite stores only SHA-256 hashes. Changing either secret rotates that identity's prior active token. A token explicitly revoked in SQLite remains revoked on restart even if its configured environment value is unchanged; set a new secret to rotate it. Never put actual values in the repository or logs.
 
+The CORS allowlist permits only the required browser headers for bearer authentication and MCP Streamable HTTP: Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id, and Last-Event-ID. Protocol header support does not broaden the configured origin allowlist.
+
 Tools:
 
 - `search_customer_records(query, limit)` — sales-agent search is allowed within policy limits.

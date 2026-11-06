@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import AgentPlayground from "./AgentPlayground";
 import {
   clearPrivilegedSessionOnRequestFailure,
   requestGatewayJson,
   resolveGatewayOrigin,
 } from "./gatewaySecurity";
 
-type Page = "overview" | "agents" | "policies" | "audit";
+type Page = "overview" | "agents" | "policies" | "audit" | "playground";
 type Overview = {
   active_agents: number;
   policy_rules: number;
@@ -42,6 +43,7 @@ type AuditEvent = {
   execution_status: string;
   error_type: string | null;
   timestamp: number;
+  request_id?: string | null;
 };
 type DashboardData = { overview: Overview; agents: Agent[]; policies: Policy[]; events: AuditEvent[] };
 type Connection = { token: string };
@@ -57,6 +59,7 @@ const NAV: { id: Page; label: string; mark: string }[] = [
   { id: "agents", label: "Agents", mark: "◉" },
   { id: "policies", label: "Policies", mark: "◇" },
   { id: "audit", label: "Audit log", mark: "≋" },
+  { id: "playground", label: "Agent playground", mark: "⌁" },
 ];
 
 function App() {
@@ -71,7 +74,7 @@ function App() {
   const [auditQuery, setAuditQuery] = useState("");
   const [decisionFilter, setDecisionFilter] = useState("ALL");
 
-  const loadDashboard = async (target: Connection) => {
+  const loadDashboard = async (target: Connection): Promise<DashboardData> => {
     setLoading(true);
     setGatewayStatus("checking");
     setError("");
@@ -82,10 +85,12 @@ function App() {
         requestGatewayJson<{ policies: Policy[] }>(GATEWAY_ORIGIN, target.token, "/api/policies"),
         requestGatewayJson<{ events: AuditEvent[] }>(GATEWAY_ORIGIN, target.token, "/api/audit?limit=250"),
       ]);
-      setData({ overview, agents: agentResponse.agents, policies: policyResponse.policies, events: auditResponse.events });
+      const nextData = { overview, agents: agentResponse.agents, policies: policyResponse.policies, events: auditResponse.events };
+      setData(nextData);
       setConnection(target);
       setGatewayStatus("connected");
       setLastUpdated(new Date());
+      return nextData;
     } catch (caught) {
       setGatewayStatus("unavailable");
       clearPrivilegedSessionOnRequestFailure(() => {
@@ -99,6 +104,11 @@ function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const refreshDashboard = async (): Promise<DashboardData | null> => {
+    if (!connection) return null;
+    return loadDashboard(connection);
   };
 
   const connect = async (event: FormEvent<HTMLFormElement>) => {
@@ -170,12 +180,13 @@ function App() {
         <header className="topbar"><div className="breadcrumb">AgentGuard <span>/</span> <strong>{NAV.find((item) => item.id === page)?.label}</strong></div><div className="top-actions"><span className="live-status"><i/> GATEWAY {gatewayStatus.toUpperCase()} <code title={GATEWAY_ORIGIN.origin ?? "Gateway origin not configured"}>{GATEWAY_ORIGIN.origin ?? "origin missing"}</code></span><button className="icon-button" onClick={refresh} disabled={loading} aria-label="Refresh data">↻</button><button className="admin-chip"><span>SA</span> Admin</button></div></header>
         {error && <div className="inline-error" role="alert">{error}<button onClick={() => setError("")}>Dismiss</button></div>}
         <div className="page-wrap">
-          <div className="page-heading"><div><div className="eyebrow">GOVERNANCE / {page.toUpperCase()}</div><h1>{page === "overview" ? "Security overview" : page === "agents" ? "Connected agents" : page === "policies" ? "Policy registry" : "Audit trail"}</h1><p>{page === "overview" ? "A live view of the access decisions protecting your data." : page === "agents" ? "Identities and credential status from the active registry." : page === "policies" ? "Deterministic rules currently loaded by the gateway." : "Persistent policy decisions and protected resource outcomes."}</p></div><div className="heading-actions"><span className="updated-label">{lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Live data"}</span><button className="button-secondary" onClick={refresh} disabled={loading}><span className={loading ? "spin" : ""}>↻</span> Refresh</button></div></div>
+          <div className="page-heading"><div><div className="eyebrow">GOVERNANCE / {page.toUpperCase()}</div><h1>{page === "overview" ? "Security overview" : page === "agents" ? "Connected agents" : page === "policies" ? "Policy registry" : page === "audit" ? "Audit trail" : "Agent playground"}</h1><p>{page === "overview" ? "A live view of the access decisions protecting your data." : page === "agents" ? "Identities and credential status from the active registry." : page === "policies" ? "Deterministic rules currently loaded by the gateway." : page === "audit" ? "Persistent policy decisions and protected resource outcomes." : "Connect a demo agent through the authenticated MCP gateway."}</p></div><div className="heading-actions"><span className="updated-label">{lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Live data"}</span><button className="button-secondary" onClick={refresh} disabled={loading}><span className={loading ? "spin" : ""}>↻</span> Refresh</button></div></div>
 
           {page === "overview" && <OverviewPage overview={overview} agents={data.agents} events={data.events.slice(0, 6)} onViewAudit={() => setPage("audit")}/>}
           {page === "agents" && <AgentsPage agents={data.agents}/>}
           {page === "policies" && <PoliciesPage policies={data.policies}/>}
           {page === "audit" && <AuditPage events={filteredEvents} total={overview.audit_event_count} query={auditQuery} onQuery={setAuditQuery} decision={decisionFilter} onDecision={setDecisionFilter}/>}
+          {page === "playground" && <AgentPlayground gateway={GATEWAY_ORIGIN} refreshDashboard={refreshDashboard}/>}
           <footer className="page-footer"><span>AgentGuard governance console</span><span>Registry auth <i/> Persistent audit <i/> {decisionTotal} recorded decisions</span></footer>
         </div>
       </main>

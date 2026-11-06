@@ -61,6 +61,8 @@ Open the local URL printed by Vite, enter the gateway origin and an admin bearer
 
 For a local demo admin credential, run `python -m backend.app.provision_agent issue demo_admin --admin` from the repository root in a terminal where the database path matches the running gateway. Copy the one-time token into the dashboard; do not commit or share it.
 
+The Agent playground page accepts a separate demo-agent token. It connects to the configured gateway's /mcp endpoint with the official TypeScript MCP SDK v2, discovers the gateway's tools, and allows scoped search, customer retrieval, and a policy-controlled export attempt. The demo credential is held in component memory and sent only to the MCP endpoint; it is not an admin credential and is not stored in browser storage. Each tool call refreshes the dashboard overview and audit rows. DENY and REQUIRE_APPROVAL remain gateway outcomes; the playground cannot approve or bypass them.
+
 ## Verify
 
 ```powershell
@@ -71,8 +73,8 @@ HTTP integration tests exercise authenticated MCP calls, token rejection and rev
 
 ## Current limitations
 
-- The dashboard is read-only; approval UI/workflow and dynamic policy editing are not implemented.
-- No OAuth provider, public deployment, or Render Workflows integration is implemented yet.
+- The admin control-plane views remain read-only; the Agent playground invokes existing MCP tools only. Approval UI/workflow and dynamic policy editing are not implemented.
+- The frontend and backend have public Vercel/Render URLs, but authenticated hosted end-to-end behavior must be verified after each deployment. No OAuth provider or Render Workflows integration is implemented.
 - The gateway binds to localhost by default. Public hosting requires configured transport host protection, HTTPS, production credential issuance, persistent database hosting, and deployment verification.
 - The CRM data is synthetic and the audit trail is persistent, not tamper-evident.
 

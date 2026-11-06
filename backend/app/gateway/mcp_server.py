@@ -440,8 +440,16 @@ def create_gateway_app(
     return CORSMiddleware(
         _HealthzBypass(authenticated),
         allow_origins=get_cors_origins(),
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Mcp-Protocol-Version",
+            "Mcp-Method",
+            "Mcp-Name",
+            "Mcp-Session-Id",
+            "Last-Event-ID",
+        ],
     )
 
 

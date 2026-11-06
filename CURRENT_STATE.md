@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** Live demo deployment configuration — CORS, health check, and environment credential bootstrap implemented; hosted verification pending
+**Stage:** Agent Playground implemented and locally verified; hosted deployment verification pending
 
 ---
 
@@ -31,12 +31,13 @@
 - Independent review Stage 1 fixes: gated trusted context/principal constructors; credential-backed test fixtures; sanitized authentication failure records; endpoint authorization matrix; request ID idempotency; distinct execution/audit ambiguity states.
 - Managed-agent Stage 2 adds a minimal deterministic MCP task client that reads its bearer token from the environment, discovers the gateway tool, and sends a scoped search through the existing authenticated gateway. The request ID is printed before the call to help investigate ambiguous outcomes. It has no CRM repository or database access; this is not an LLM planner.
 - `httpx2` is intentional for MCP SDK v2. `requirements.txt` pins the complete Python 3.11 runtime/test dependency set, including direct `mcp`, `httpx2`, and `uvicorn` imports. Tests use standard-library `unittest`.
-- An admin-authenticated read-only React + TypeScript dashboard loads real overview counts, agents, policies, and audit rows from backend APIs. No metrics are simulated. The admin token is held in browser memory only and privileged data is cleared on request failures.
+- An admin-authenticated React + TypeScript dashboard loads real overview counts, agents, policies, and audit rows from backend APIs. Admin views remain read-only; the Agent Playground uses a separate component-memory demo-agent token to call only discovered MCP tools. No metrics or tool responses are simulated. The admin token is never passed to the MCP client.
 - The M3/M4/M5 backend and local dashboard milestone changes are implemented and verified. This remains a local prototype: authentication is a local bearer-token registry, not OAuth; approval handling, dynamic policy editing, production deployment, and Render Workflows remain outstanding.
 - **AG-01 — fixed in the bundled clients:** both clients use the shared endpoint resolver and `PinnedAddressTransport`. The resolver rejects every non-public DNS answer; the transport dials a retained literal address, preserves the configured Host and TLS SNI name, and uses normal certificate verification. Ambient proxies are disabled. Loopback HTTP remains restricted to verified loopback destinations. Regression tests exercise rebinding, IPv4/IPv6, TLS hostname mismatch, SNI and redirects. Keep the pinned `httpx2`/`httpcore2` versions and rerun these tests on upgrades; network egress rules remain defense in depth.
 - **AG-02 — partially fixed:** a process-local request limiter allows at most 300 requests per peer per 60 seconds by default before credential lookup and counts valid and invalid requests equally. Auth-failure audit writes have a separate 20-per-peer cap. The bounded peer table does not evict active peers; new peers share an overflow bucket. The gateway ignores forwarded headers and the launcher disables Uvicorn proxy rewriting. Per-process limits and proxy-shared peer identities require upstream ingress controls for hosted deployments.
 - **AG-03 — fixed locally:** production dashboard origins require HTTPS on the default port and an exact hostname in build-time `VITE_AGENTGUARD_ALLOWED_API_HOSTS`; loopback HTTP is accepted only for development. Request failures (including 401/403, server errors and network errors) clear privileged data, connection credentials and timestamps. Regression coverage verifies these boundaries.
 - Live demo configuration now supports exact CORS origins through `AGENTGUARD_CORS_ORIGINS`, a non-sensitive unauthenticated `GET /healthz`, and paired startup credentials for `agent_admin` / `agent_sales_1` stored in SQLite only as SHA-256 hashes.
+- The Agent Playground uses `@modelcontextprotocol/client@2.4.0` for Streamable HTTP initialization, live tool discovery, and authenticated search, customer lookup, and policy-controlled export calls. It rejects redirects, sends the separate demo token only to `/mcp`, refreshes the admin overview/audit after each tool attempt, and correlates the decision using the hashed request ID returned in audit data.
 - Requested demo URLs: frontend `https://agent-guard-duo-x.vercel.app`; backend `https://agentguard-api-g87x.onrender.com`. These URLs and the deployment itself have not yet been independently verified after this code change.
 - Keep the Render `AGENTGUARD_DB_PATH` pointed at its existing persistent disk. Confirm the Render start command binds `0.0.0.0` and uses the service `PORT`; application-level ingress limits remain process-local and need an upstream limit. No credential values were provisioned or printed, and no dependencies were installed.
 - Verification for this configuration: full backend suite **85 tests passed in 16.982s**; frontend **5 tests passed**; `npm run typecheck`, `npm run build`, `python -B -m compileall -q backend tests demo`, and `git diff --check` all exited 0.
@@ -114,6 +115,17 @@ Diff Check: `git diff --check` — **exit code 0**.
 - Python compilation: `.\.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — exit code 0.
 - `git diff --check` — exit code 0. Hosted URLs were not verified by this local test run.
 
+### Agent Playground verification (2026-11-06)
+
+- Backend full suite: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v` — **Ran 85 tests in 17.276s — OK**, exit code 0.
+- Frontend: `npm test` — **10 passed, 0 failed**, exit code 0.
+- Frontend typecheck: `npm run typecheck` — exit code 0.
+- Frontend production build: `npm run build` — exit code 0. Vite emitted a non-fatal warning that the minified MCP client bundle exceeds 500 kB (562.29 kB).
+- Python compilation: `.\.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — exit code 0.
+- `git diff --check` — exit code 0.
+- New frontend regressions exercise MCP initialization, tool discovery, bearer attachment, same-origin redirect rejection, input validation, ALLOW/DENY/REQUIRE_APPROVAL classification, audit decision correlation, and error redaction. The gateway regression confirms MCP protocol headers are CORS-allowed only for the exact configured frontend origin.
+- The hosted Agent Playground has not yet been verified with a real demo-agent credential; no credentials were accessed or printed during this local verification.
+
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
 2. `test_counter_persistence_on_failure` — ok
@@ -166,4 +178,4 @@ M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs rema
 
 ## 6. Next Exact Task
 
-Next: set `AGENTGUARD_CORS_ORIGINS` and both bootstrap token secrets in Render, retain the persistent `AGENTGUARD_DB_PATH`, confirm the service binds `0.0.0.0:$PORT`, then verify `/healthz`, admin authentication, MCP ALLOW/DENY/REQUIRE_APPROVAL outcomes, audit persistence, and invocation counters at the supplied URLs. Do not treat a successful health response as proof of authenticated gateway behavior. No real credential values are stored in the repository.
+Next: publish the verified source commit, let Vercel and Render deploy, then verify the hosted CORS preflight and use the separately provisioned demo-agent token in the Agent Playground. Confirm search and customer lookup ALLOW, export DENY/REQUIRE_APPROVAL outcomes, refreshed audit decisions, and unchanged invocation counters for blocked calls. Do not treat a successful health response as proof of authenticated gateway behavior.

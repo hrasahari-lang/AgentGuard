@@ -36,6 +36,8 @@ These decisions are the current baseline. Reopen them only when a concrete techn
 31. **Hosted CORS and health check:** Configure browser origins through `AGENTGUARD_CORS_ORIGINS`, requiring exact canonical origins and rejecting wildcards. Expose only a static `GET /healthz` outside authentication; every admin API and MCP path stays behind the bearer middleware.
 32. **Environment credential bootstrap:** When both bootstrap token variables are configured, startup idempotently registers the fixed admin and demo identities. Require distinct high-entropy URL-safe tokens, store only SHA-256 hashes, and rotate prior active credentials when the configured values change. A matching revoked credential stays revoked across restarts. Never print or log token values.
 
+33. **Browser Agent Playground:** Use the pinned official TypeScript MCP SDK v2 package @modelcontextprotocol/client 2.4.0 for browser Streamable HTTP initialization, tool discovery and calls. Keep the demo-agent credential separate from the admin token and only in the playground component's memory. Use the existing gateway origin and /mcp path, reject redirects, refresh the admin overview/audit APIs after each attempted tool call, and classify outcomes from the actual MCP result and matching hashed audit request ID.
+
 ## User environment and preferences
 
 - User is working on Windows 11.

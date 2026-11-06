@@ -65,6 +65,12 @@ These rules are mandatory for the MVP. A feature is not complete if it violates 
 
 AgentGuard only governs resources and tool operations routed through its enforcement boundary. Any direct credential or network path around the gateway is a bypass and must be removed or separately governed before claiming protection for that resource.
 
+The Agent playground must accept a separate demo-agent bearer token. Keep it masked and in component memory only; never use localStorage, sessionStorage, VITE variables, or hardcoded agent credentials. Send it only to the configured same-origin /mcp endpoint with the official MCP client, and reject redirects.
+
+Never pass the admin bearer credential to the MCP client or the demo-agent token to admin APIs. The only bridge between tool execution and admin views is a callback that refreshes overview and audit data after the MCP operation.
+
+CORS must keep exact configured origins and explicitly allow only the browser headers required by MCP Streamable HTTP; protocol header support must not add wildcard origins.
+
 ## Authentication abuse controls
 
 - Validate demo MCP endpoints before constructing the bearer-bearing client. Plain HTTP is allowed only for literal loopback IPs or `localhost` that resolves only to loopback. Remote HTTPS requires an exact hostname in `AGENTGUARD_TRUSTED_MCP_HOSTS`, and every DNS answer must be globally routable. Private, loopback, link-local, multicast, unspecified, reserved and IPv4-mapped non-public destinations are rejected without private-host exceptions.

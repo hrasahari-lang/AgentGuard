@@ -407,7 +407,7 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
                 status, _body = self._raw_request(method, path)
                 self.assertEqual(status, 401)
 
-    def test_configured_cors_allows_only_the_exact_frontend_origin(self):
+    def test_configured_cors_allows_mcp_headers_only_for_the_exact_frontend_origin(self):
         origin = "https://agent-guard-duo-x.vercel.app"
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {
             "AGENTGUARD_CORS_ORIGINS": origin,
@@ -416,19 +416,36 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
 
         headers = (
             ("Origin", origin),
-            ("Access-Control-Request-Method", "GET"),
-            ("Access-Control-Request-Headers", "authorization"),
+            ("Access-Control-Request-Method", "POST"),
+            (
+                "Access-Control-Request-Headers",
+                "authorization,content-type,mcp-protocol-version,mcp-method,mcp-name,"
+                "mcp-session-id,last-event-id",
+            ),
         )
-        status, response_headers, _body = _asgi_request(app, "OPTIONS", "/api/overview", headers)
+        status, response_headers, _body = _asgi_request(app, "OPTIONS", "/mcp", headers)
         self.assertEqual(status, 200)
         self.assertEqual(response_headers.get("access-control-allow-origin"), origin)
+        allowed_headers = {
+            value.strip().lower()
+            for value in response_headers.get("access-control-allow-headers", "").split(",")
+        }
+        self.assertTrue({
+            "authorization",
+            "content-type",
+            "mcp-protocol-version",
+            "mcp-method",
+            "mcp-name",
+            "mcp-session-id",
+            "last-event-id",
+        }.issubset(allowed_headers))
 
         denied_headers = tuple(
             (name, "https://attacker.example" if name.lower() == "origin" else value)
             for name, value in headers
         )
         _status, response_headers, _body = _asgi_request(
-            app, "OPTIONS", "/api/overview", denied_headers
+            app, "OPTIONS", "/mcp", denied_headers
         )
         self.assertNotIn("access-control-allow-origin", response_headers)
 
