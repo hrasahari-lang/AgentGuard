@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import logging
+import os
 import re
 import secrets
 import sqlite3
@@ -97,6 +98,57 @@ def issue_agent_token(
                 (agent_id.strip(), token_hash, int(is_admin)),
             )
     return token
+
+
+def bootstrap_environment_credentials(db_path: str | Path | None = None) -> None:
+    """Idempotently register the configured admin and demo-agent tokens by hash.
+
+    Configure both environment variables together. The tokens are never returned,
+    logged, or stored in plaintext. Replacing a configured token rotates that
+    identity's previous active credential. A matching credential already revoked
+    in SQLite remains revoked; rotate the configured value to issue a replacement.
+    """
+    admin_token = os.getenv("AGENTGUARD_BOOTSTRAP_ADMIN_TOKEN")
+    demo_token = os.getenv("AGENTGUARD_BOOTSTRAP_DEMO_AGENT_TOKEN")
+    if admin_token is None and demo_token is None:
+        return
+    if admin_token is None or demo_token is None:
+        raise ValueError("Both bootstrap credential environment variables must be configured")
+    if any(not _TOKEN_PATTERN.fullmatch(token) or len(token) < 43 for token in (admin_token, demo_token)):
+        raise ValueError("Bootstrap credentials must be URL-safe tokens of at least 43 characters")
+    if hmac.compare_digest(admin_token, demo_token):
+        raise ValueError("Bootstrap credentials must be distinct")
+
+    credentials = (
+        ("agent_admin", admin_token, True),
+        ("agent_sales_1", demo_token, False),
+    )
+    path = initialize_agent_registry(db_path)
+    with closing(sqlite3.connect(path, timeout=15.0)) as conn:
+        with conn:
+            prepared = []
+            for agent_id, token, is_admin in credentials:
+                token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+                existing = conn.execute(
+                    "SELECT agent_id, is_admin FROM agent_credentials WHERE token_hash=?",
+                    (token_hash,),
+                ).fetchone()
+                if existing and (existing[0] != agent_id or bool(existing[1]) != is_admin):
+                    raise ValueError("A bootstrap token is already assigned to a different identity")
+                prepared.append((agent_id, token_hash, is_admin, existing is not None))
+
+            for agent_id, token_hash, is_admin, exists in prepared:
+                if exists:
+                    continue
+                conn.execute(
+                    "UPDATE agent_credentials SET active=0 WHERE agent_id=? AND active=1",
+                    (agent_id,),
+                )
+                conn.execute(
+                    "INSERT INTO agent_credentials(agent_id, token_hash, is_admin, active, created_at) "
+                    "VALUES (?, ?, ?, 1, strftime('%s','now'))",
+                    (agent_id, token_hash, int(is_admin)),
+                )
 
 
 def revoke_agent_credentials(agent_id: str, *, db_path: str | Path | None = None) -> int:

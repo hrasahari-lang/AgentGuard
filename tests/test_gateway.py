@@ -39,6 +39,39 @@ from backend.app.security.auth import (
 from backend.app.crm_repository import TrustedAgentContext
 
 
+def _asgi_request(app, method, path, headers=()):
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+    sent = []
+
+    async def receive():
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "headers": [(name.lower().encode("ascii"), value.encode("latin-1")) for name, value in headers],
+        "client": ("127.0.0.1", 45678),
+        "server": ("127.0.0.1", 8000),
+    }
+    asyncio.run(app(scope, receive, send))
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    body = b"".join(
+        message.get("body", b"") for message in sent if message["type"] == "http.response.body"
+    )
+    response_headers = {key.decode("latin-1").lower(): value.decode("latin-1")
+                        for key, value in start["headers"]}
+    return start["status"], response_headers, body
+
+
 class TestAuthenticatedMcpGateway(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -358,6 +391,46 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         )
         with urlopen(preflight, timeout=3) as response:
             self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:5173")
+
+    def test_healthz_is_public_but_admin_and_mcp_routes_still_require_authentication(self):
+        status, body = self._raw_request("GET", "/healthz")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"status": "ok"})
+
+        for method, path in (
+            ("GET", "/api/overview"),
+            ("GET", "/mcp"),
+            ("POST", "/healthz"),
+            ("GET", "/healthz/"),
+        ):
+            with self.subTest(method=method, path=path):
+                status, _body = self._raw_request(method, path)
+                self.assertEqual(status, 401)
+
+    def test_configured_cors_allows_only_the_exact_frontend_origin(self):
+        origin = "https://agent-guard-duo-x.vercel.app"
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {
+            "AGENTGUARD_CORS_ORIGINS": origin,
+        }):
+            app = create_gateway_app(Path(temp_dir) / "cors.db")
+
+        headers = (
+            ("Origin", origin),
+            ("Access-Control-Request-Method", "GET"),
+            ("Access-Control-Request-Headers", "authorization"),
+        )
+        status, response_headers, _body = _asgi_request(app, "OPTIONS", "/api/overview", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(response_headers.get("access-control-allow-origin"), origin)
+
+        denied_headers = tuple(
+            (name, "https://attacker.example" if name.lower() == "origin" else value)
+            for name, value in headers
+        )
+        _status, response_headers, _body = _asgi_request(
+            app, "OPTIONS", "/api/overview", denied_headers
+        )
+        self.assertNotIn("access-control-allow-origin", response_headers)
 
     def test_every_admin_endpoint_enforces_auth_and_excludes_sensitive_data(self):
         self._call_tool("search_customer_records", {"query": "Acme", "limit": 5}, self.token)

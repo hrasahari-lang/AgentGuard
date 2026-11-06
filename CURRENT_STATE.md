@@ -1,7 +1,7 @@
 # AgentGuard — Current State
 
 **Last updated:** 2026-11-06
-**Stage:** Final release deployment attempt — local security verification complete; provider authorization and hosted configuration are blocked
+**Stage:** Live demo deployment configuration — CORS, health check, and environment credential bootstrap implemented; hosted verification pending
 
 ---
 
@@ -36,17 +36,17 @@
 - **AG-01 — fixed in the bundled clients:** both clients use the shared endpoint resolver and `PinnedAddressTransport`. The resolver rejects every non-public DNS answer; the transport dials a retained literal address, preserves the configured Host and TLS SNI name, and uses normal certificate verification. Ambient proxies are disabled. Loopback HTTP remains restricted to verified loopback destinations. Regression tests exercise rebinding, IPv4/IPv6, TLS hostname mismatch, SNI and redirects. Keep the pinned `httpx2`/`httpcore2` versions and rerun these tests on upgrades; network egress rules remain defense in depth.
 - **AG-02 — partially fixed:** a process-local request limiter allows at most 300 requests per peer per 60 seconds by default before credential lookup and counts valid and invalid requests equally. Auth-failure audit writes have a separate 20-per-peer cap. The bounded peer table does not evict active peers; new peers share an overflow bucket. The gateway ignores forwarded headers and the launcher disables Uvicorn proxy rewriting. Per-process limits and proxy-shared peer identities require upstream ingress controls for hosted deployments.
 - **AG-03 — fixed locally:** production dashboard origins require HTTPS on the default port and an exact hostname in build-time `VITE_AGENTGUARD_ALLOWED_API_HOSTS`; loopback HTTP is accepted only for development. Request failures (including 401/403, server errors and network errors) clear privileged data, connection credentials and timestamps. Regression coverage verifies these boundaries.
-- Latest verification after DNS pinning: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v` — **76 tests passed in 17.408s**; frontend `npm test` — **5 passed**; `npm run typecheck`, `npm run build`, Python compileall and `git diff --check` all exited 0.
-- No dependencies or deployment credentials were installed or provisioned. No hosted deployment or live smoke test was performed.
-- **Deployment check (2026-11-06): blocked before deployment.** The Vercel app connection returned `UNAUTHORIZED` and requires reconnection; Vercel and Railway CLIs are unavailable in the workspace, and no authenticated alternate host is connected. The repository has no Vercel or Railway deployment configuration.
-- Backend deployment prerequisites are still missing: `backend/app/run_gateway.py` defaults to `127.0.0.1` and reads `AGENTGUARD_PORT` rather than platform `PORT`; CORS in `backend/app/gateway/mcp_server.py` only allows local Vite origins; SQLite defaults to `backend/data/crm.db` and needs a persistent mount configured through `AGENTGUARD_DB_PATH`; no explicit health route was found; no production admin credential was provisioned. Upstream ingress limits are also required. No public URLs were available to smoke-test. Outbound egress restrictions remain defense in depth. The local credential registry is not OAuth/SSO.
+- Live demo configuration now supports exact CORS origins through `AGENTGUARD_CORS_ORIGINS`, a non-sensitive unauthenticated `GET /healthz`, and paired startup credentials for `agent_admin` / `agent_sales_1` stored in SQLite only as SHA-256 hashes.
+- Requested demo URLs: frontend `https://agent-guard-duo-x.vercel.app`; backend `https://agentguard-api-g87x.onrender.com`. These URLs and the deployment itself have not yet been independently verified after this code change.
+- Keep the Render `AGENTGUARD_DB_PATH` pointed at its existing persistent disk. Confirm the Render start command binds `0.0.0.0` and uses the service `PORT`; application-level ingress limits remain process-local and need an upstream limit. No credential values were provisioned or printed, and no dependencies were installed.
+- Verification for this configuration: full backend suite **85 tests passed in 16.982s**; frontend **5 tests passed**; `npm run typecheck`, `npm run build`, `python -B -m compileall -q backend tests demo`, and `git diff --check` all exited 0.
 
 ---
 
 ## 2. Workspace & Git Configuration
 
 - **Workspace directory:** `C:\Users\nunna\Desktop\GURDAI1`
-- **Git status:** Branch `main`, HEAD `3abde8fcc249f43288237203e31b8f46ae260f55` (different from the supplied published baseline `1b471fbc56c488d0dc79bdea5bc23ca98cf16cd6`); AG-01–AG-03 changes are uncommitted. Existing untracked `M2_FINAL_SECURITY_REVIEW.md`, `AgentGuard_Audit.zip`, and `AgentGuard_Audit/` remain untouched. No commit or push was made.
+- **Git status:** Branch `main`; live demo configuration changes belong to this release. Existing untracked `M2_FINAL_SECURITY_REVIEW.md`, `AgentGuard_Audit.zip`, and `AgentGuard_Audit/` remain untouched and excluded from source commits.
 - **Git remote:** `origin` -> `https://github.com/hrasahari-lang/AgentGuard.git`
 - **`.gitignore` active:** Excludes `.venv/`, `*.db`, `*.db-wal`, `*.db-shm`, `*.sqlite*`, `__pycache__/`, `.env`, `.env.*`.
 - **Python environment:** Python 3.11; `mcp==2.3.0` and HTTP runtime dependencies installed in `.venv` and pinned directly in `requirements.txt` for the gateway. Tests use standard-library `unittest`.
@@ -107,6 +107,13 @@ Diff Check: `git diff --check` — **exit code 0**.
 - Frontend production build: `npm run build` — exit code 0.
 - `git diff --check` — exit code 0 after final documentation update (Git may emit configured LF-to-CRLF advisory warnings).
 
+### Live demo configuration verification (2026-11-06)
+
+- Backend: `.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v` — **Ran 85 tests in 16.982s — OK**, exit code 0. Includes exact CORS origins, public `GET /healthz`, authenticated admin/MCP routes, bootstrap idempotence, hash-only storage, token rotation, and revoked-token persistence.
+- Frontend: `npm test` — **5 passed**, exit code 0; `npm run typecheck` — exit code 0; `npm run build` — exit code 0.
+- Python compilation: `.\.venv\Scripts\python.exe -B -m compileall -q backend tests demo` — exit code 0.
+- `git diff --check` — exit code 0. Hosted URLs were not verified by this local test run.
+
 **Milestone 1 Tests (11 passed):**
 1. `test_agent_specific_record_access` — ok
 2. `test_counter_persistence_on_failure` — ok
@@ -153,10 +160,10 @@ Diff Check: `git diff --check` — Exit Code `0`.
 
 ## 5. Current Known Errors / Blockers
 
-M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs remain optional for current read-only tools; retry deduplication requires the caller to pass a stable `request_id`. Any future mutating operation must require one. SQLite audit is persistent but mutable and not tamper-evident. Human approvals, dynamic policy editing, hosted deployment, and Render Workflows remain outstanding. No GitHub push was attempted.
+M3 authentication is a local registry prototype, not OAuth/SSO. Request IDs remain optional for current read-only tools; retry deduplication requires the caller to pass a stable `request_id`. Any future mutating operation must require one. SQLite audit is persistent but mutable and not tamper-evident. Human approvals, dynamic policy editing, hosted deployment verification, and Render Workflows remain outstanding.
 
 ---
 
 ## 6. Next Exact Task
 
-Next: before private hosted testing, configure upstream ingress limits and trusted proxy handling, then address production CORS, platform bind/port handling, durable storage, and secure same-database admin credential provisioning. The bundled MCP clients now pin validated DNS results to literal IP connections while retaining TLS hostname verification. Keep egress restrictions as defense in depth. Do not deploy or expose a public backend until the hosted prerequisites are met and deployment is separately authorized. No feature milestone, commit, push, credential provisioning, or deployment was performed in this task.
+Next: set `AGENTGUARD_CORS_ORIGINS` and both bootstrap token secrets in Render, retain the persistent `AGENTGUARD_DB_PATH`, confirm the service binds `0.0.0.0:$PORT`, then verify `/healthz`, admin authentication, MCP ALLOW/DENY/REQUIRE_APPROVAL outcomes, audit persistence, and invocation counters at the supplied URLs. Do not treat a successful health response as proof of authenticated gateway behavior. No real credential values are stored in the repository.

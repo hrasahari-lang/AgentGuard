@@ -3,8 +3,10 @@
 Provides filesystem paths and settings using the Python standard library.
 """
 import os
+import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Project root directory: C:\Users\nunna\Desktop\GURDAI1
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -12,6 +14,77 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Default backend SQLite database path
 DEFAULT_DATA_DIR = PROJECT_ROOT / "backend" / "data"
 DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "crm.db"
+DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+
+
+def get_cors_origins() -> list[str]:
+    """Return exact canonical browser origins, defaulting to local Vite development."""
+    raw = os.getenv("AGENTGUARD_CORS_ORIGINS")
+    if raw is None:
+        return list(DEFAULT_CORS_ORIGINS)
+    if not raw.strip():
+        raise ValueError("AGENTGUARD_CORS_ORIGINS must contain at least one exact origin")
+
+    origins: list[str] = []
+    for value in raw.split(","):
+        if not value or value != value.strip() or value == "*":
+            raise ValueError("AGENTGUARD_CORS_ORIGINS must contain exact origins, not wildcards")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            raise ValueError("AGENTGUARD_CORS_ORIGINS contains a malformed origin") from None
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or "%" in parsed.netloc
+        ):
+            raise ValueError("AGENTGUARD_CORS_ORIGINS must contain scheme and host only")
+
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname.lower()
+        if host.endswith("."):
+            raise ValueError("AGENTGUARD_CORS_ORIGINS host must be canonical")
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            labels = host.split(".")
+            if not all(
+                label
+                and len(label) <= 63
+                and label[0].isascii()
+                and label[0].isalnum()
+                and label[-1].isascii()
+                and label[-1].isalnum()
+                and all(char.isascii() and (char.isalnum() or char == "-") for char in label)
+                for label in labels
+            ):
+                raise ValueError("AGENTGUARD_CORS_ORIGINS contains an invalid hostname") from None
+            if all(label.isdigit() for label in labels):
+                raise ValueError("AGENTGUARD_CORS_ORIGINS contains an ambiguous numeric hostname")
+            local_host = host == "localhost"
+            rendered_host = host
+        else:
+            local_host = address.is_loopback
+            rendered_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+
+        if scheme == "http" and not local_host:
+            raise ValueError("Non-loopback AGENTGUARD_CORS_ORIGINS must use HTTPS")
+        if port == (443 if scheme == "https" else 80):
+            raise ValueError("AGENTGUARD_CORS_ORIGINS must omit the default port")
+        canonical = f"{scheme}://{rendered_host}" + (f":{port}" if port is not None else "")
+        if value != canonical:
+            raise ValueError("AGENTGUARD_CORS_ORIGINS must use canonical origin spelling")
+        if canonical in origins:
+            raise ValueError("AGENTGUARD_CORS_ORIGINS must not contain duplicate origins")
+        origins.append(canonical)
+    return origins
 
 
 @dataclass(frozen=True)

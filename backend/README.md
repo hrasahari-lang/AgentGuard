@@ -16,6 +16,10 @@ Every HTTP request passes an in-process sliding-window request limit before cred
 
 The app uses only the immediate socket peer and ignores forwarded-IP headers. `run_gateway` disables Uvicorn proxy-header rewriting. Behind a reverse proxy, multiple users may share the proxy peer bucket; multiple processes do not share limiter state. Do not trust arbitrary `X-Forwarded-For`. Use upstream ingress limits as the deployment-wide control. If a proxy identity is enabled, trust only fixed proxy addresses and require the proxy to overwrite client-supplied forwarding headers. The local limiter is not DDoS protection.
 
+`GET /healthz` is an unauthenticated liveness check returning only `{"status":"ok"}`. All admin APIs and MCP routes continue through bearer authentication. CORS reads exact comma-separated origins from `AGENTGUARD_CORS_ORIGINS`; if unset, only the two local Vite origins are allowed. For the hosted dashboard, set it to `https://agent-guard-duo-x.vercel.app`.
+
+For hosted bootstrap, set both `AGENTGUARD_BOOTSTRAP_ADMIN_TOKEN` and `AGENTGUARD_BOOTSTRAP_DEMO_AGENT_TOKEN` to distinct URL-safe secrets of at least 43 characters. On startup, the gateway idempotently registers `agent_admin` with the admin role and `agent_sales_1` as the demo agent. SQLite stores only SHA-256 hashes. Changing either secret rotates that identity's prior active token. A token explicitly revoked in SQLite remains revoked on restart even if its configured environment value is unchanged; set a new secret to rotate it. Never put actual values in the repository or logs.
+
 Tools:
 
 - `search_customer_records(query, limit)` — sales-agent search is allowed within policy limits.

@@ -18,10 +18,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backend.app.audit.audit_store import AuditStore
-from backend.app.config import get_db_path
+from backend.app.config import get_cors_origins, get_db_path
 from backend.app.crm_repository import CrmRepository, TrustedAgentContext
 from backend.app.database import init_db
 from backend.app.policy_engine import (
@@ -36,6 +36,7 @@ from backend.app.security.auth import (
     AgentAuthenticator,
     AuthenticationFailureRateLimiter,
     AuthenticationRequestRateLimiter,
+    bootstrap_environment_credentials,
     current_trusted_context,
     initialize_agent_registry,
 )
@@ -240,6 +241,23 @@ def _admin_required() -> Response | None:
     return None
 
 
+class _HealthzBypass:
+    """Serve only the non-sensitive liveness endpoint outside bearer auth."""
+
+    def __init__(self, authenticated_app: ASGIApp) -> None:
+        self.authenticated_app = authenticated_app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") == "GET"
+            and scope.get("path") == "/healthz"
+        ):
+            await JSONResponse({"status": "ok"})(scope, receive, send)
+            return
+        await self.authenticated_app(scope, receive, send)
+
+
 def create_gateway_app(
     db_path: str | Path | None = None,
     *,
@@ -252,6 +270,7 @@ def create_gateway_app(
     resolved_path = get_db_path(db_path)
     init_db(resolved_path)
     initialize_agent_registry(resolved_path)
+    bootstrap_environment_credentials(resolved_path)
     engine = policy_engine or PolicyEngine()
     crm = repository or CrmRepository(resolved_path)
     audit = AuditStore(resolved_path)
@@ -419,8 +438,8 @@ def create_gateway_app(
         request_limiter=auth_request_limiter,
     )
     return CORSMiddleware(
-        authenticated,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        _HealthzBypass(authenticated),
+        allow_origins=get_cors_origins(),
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
