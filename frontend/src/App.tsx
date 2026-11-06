@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
-  clearPrivilegedSessionOnAuthFailure,
-  GatewayAuthenticationError,
+  clearPrivilegedSessionOnRequestFailure,
   requestGatewayJson,
   resolveGatewayOrigin,
 } from "./gatewaySecurity";
@@ -48,7 +47,10 @@ type DashboardData = { overview: Overview; agents: Agent[]; policies: Policy[]; 
 type Connection = { token: string };
 type GatewayStatus = "unavailable" | "checking" | "connected";
 
-const GATEWAY_ORIGIN = resolveGatewayOrigin(import.meta.env.VITE_AGENTGUARD_API_ORIGIN);
+const GATEWAY_ORIGIN = resolveGatewayOrigin(import.meta.env.VITE_AGENTGUARD_API_ORIGIN, {
+  production: import.meta.env.PROD,
+  approvedHostnames: import.meta.env.VITE_AGENTGUARD_ALLOWED_API_HOSTS,
+});
 
 const NAV: { id: Page; label: string; mark: string }[] = [
   { id: "overview", label: "Overview", mark: "◫" },
@@ -86,14 +88,12 @@ function App() {
       setLastUpdated(new Date());
     } catch (caught) {
       setGatewayStatus("unavailable");
-      if (caught instanceof GatewayAuthenticationError) {
-        clearPrivilegedSessionOnAuthFailure(caught.status, () => {
-          setData(null);
-          setConnection(null);
-          setToken("");
-          setLastUpdated(null);
-        });
-      }
+      clearPrivilegedSessionOnRequestFailure(() => {
+        setData(null);
+        setConnection(null);
+        setToken("");
+        setLastUpdated(null);
+      });
       setError(caught instanceof Error ? caught.message : "Could not load AgentGuard data.");
       throw caught;
     } finally {

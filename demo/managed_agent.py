@@ -7,11 +7,11 @@ import os
 import sys
 import uuid
 
-import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
-from demo.endpoint_validation import EndpointValidationError, validate_mcp_endpoint
+from demo.endpoint_validation import EndpointValidationError, resolve_mcp_endpoint
+from demo.pinned_http_transport import create_pinned_mcp_http_client
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +31,7 @@ async def run() -> int:
     token = os.getenv("AGENTGUARD_TOKEN")
     endpoint = os.getenv("AGENTGUARD_MCP_URL", "http://127.0.0.1:8000/mcp")
     try:
-        endpoint = validate_mcp_endpoint(endpoint)
+        endpoint = resolve_mcp_endpoint(endpoint)
     except EndpointValidationError as exc:
         print(f"Invalid AGENTGUARD_MCP_URL: {exc}", file=sys.stderr)
         return 2
@@ -45,8 +45,8 @@ async def run() -> int:
     request_id = args.request_id or uuid.uuid4().hex
     print(f"AgentGuard request ID: {request_id}", flush=True)
     try:
-        async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as http_client:
-            transport = streamable_http_client(endpoint, http_client=http_client)
+        async with create_pinned_mcp_http_client(endpoint, token) as http_client:
+            transport = streamable_http_client(endpoint.url, http_client=http_client)
             async with Client(transport) as client:
                 available = {tool.name for tool in (await client.list_tools()).tools}
                 if "search_customer_records" not in available:

@@ -35,6 +35,7 @@ from backend.app.security.auth import (
     AgentAuthenticationMiddleware,
     AgentAuthenticator,
     AuthenticationFailureRateLimiter,
+    AuthenticationRequestRateLimiter,
     current_trusted_context,
     initialize_agent_registry,
 )
@@ -245,6 +246,7 @@ def create_gateway_app(
     policy_engine: PolicyEngine | None = None,
     repository: CrmRepository | None = None,
     auth_failure_limiter: AuthenticationFailureRateLimiter | None = None,
+    auth_request_limiter: AuthenticationRequestRateLimiter | None = None,
 ) -> ASGIApp:
     """Create the Starlette ASGI app with request auth ahead of the MCP endpoint."""
     resolved_path = get_db_path(db_path)
@@ -410,7 +412,11 @@ def create_gateway_app(
         max_request_body_size=1_048_576,
     )
     authenticated = AgentAuthenticationMiddleware(
-        mcp_app, AgentAuthenticator(resolved_path), audit, auth_failure_limiter
+        mcp_app,
+        AgentAuthenticator(resolved_path),
+        audit,
+        auth_failure_limiter,
+        request_limiter=auth_request_limiter,
     )
     return CORSMiddleware(
         authenticated,

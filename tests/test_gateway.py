@@ -192,14 +192,14 @@ class TestAuthenticatedMcpGateway(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertEqual(get_total_invocations(self.db_path), 0)
 
-    def test_authentication_failures_are_rate_limited_before_audit_and_valid_auth_still_works(self):
+    def test_failure_audit_is_bounded_and_valid_auth_works_before_request_cap(self):
         statuses = [self._raw_request("GET", "/api/overview")[0] for _ in range(20)]
         self.assertEqual(statuses, [401] * 20)
-        # Forwarded headers are untrusted and cannot create a fresh limiter bucket.
-        limited_status, _ = self._raw_request(
+        # Audit sampling stops after the failure cap, but denial remains 401.
+        further_failure_status, _ = self._raw_request(
             "GET", "/api/overview", [("X-Forwarded-For", "198.51.100.99")]
         )
-        self.assertEqual(limited_status, 429)
+        self.assertEqual(further_failure_status, 401)
 
         with closing(sqlite3.connect(self.db_path)) as connection:
             count = connection.execute(

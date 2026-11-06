@@ -6,18 +6,18 @@ import json
 import os
 import sys
 
-import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
-from demo.endpoint_validation import EndpointValidationError, validate_mcp_endpoint
+from demo.endpoint_validation import EndpointValidationError, resolve_mcp_endpoint
+from demo.pinned_http_transport import create_pinned_mcp_http_client
 
 
 async def run() -> int:
     token = os.getenv("AGENTGUARD_TOKEN")
     url = os.getenv("AGENTGUARD_MCP_URL", "http://127.0.0.1:8000/mcp")
     try:
-        url = validate_mcp_endpoint(url)
+        endpoint = resolve_mcp_endpoint(url)
     except EndpointValidationError as exc:
         print(f"Invalid AGENTGUARD_MCP_URL: {exc}", file=sys.stderr)
         return 2
@@ -25,8 +25,8 @@ async def run() -> int:
         print("Set AGENTGUARD_TOKEN to a provisioned gateway credential.", file=sys.stderr)
         return 2
 
-    async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}) as http_client:
-        transport = streamable_http_client(url, http_client=http_client)
+    async with create_pinned_mcp_http_client(endpoint, token) as http_client:
+        transport = streamable_http_client(endpoint.url, http_client=http_client)
         async with Client(transport) as client:
             tools = await client.list_tools()
             print("Discovered tools:", ", ".join(tool.name for tool in tools.tools))

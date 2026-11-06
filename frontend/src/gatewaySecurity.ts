@@ -13,7 +13,28 @@ export class GatewayAuthenticationError extends Error {
   }
 }
 
-export function resolveGatewayOrigin(value: unknown): GatewayOriginConfig {
+export type GatewayOriginOptions = {
+  production?: boolean;
+  approvedHostnames?: unknown;
+};
+
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+function approvedHostnameSet(value: unknown): Set<string> | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const hosts = value.split(",").map((host) => host.trim().toLowerCase());
+  if (hosts.some((host) => {
+    const labels = host.split(".");
+    return host !== host.trim()
+      || host.endsWith(".")
+      || labels.length < 2
+      || labels.some((label) => !DNS_LABEL.test(label))
+      || labels.every((label) => /^\d+$/.test(label));
+  })) return null;
+  return new Set(hosts);
+}
+
+export function resolveGatewayOrigin(value: unknown, options: GatewayOriginOptions = {}): GatewayOriginConfig {
   if (typeof value !== "string" || !value || value !== value.trim()) {
     return { origin: null, error: "Set VITE_AGENTGUARD_API_ORIGIN to the trusted gateway origin." };
   }
@@ -33,6 +54,9 @@ export function resolveGatewayOrigin(value: unknown): GatewayOriginConfig {
     || hostname === "[::1]"
     || /^127(?:\.\d{1,3}){3}$/.test(hostname)
       && hostname.split(".").slice(1).every((part) => Number(part) <= 255);
+  const approvedHostnames = options.production
+    ? approvedHostnameSet(options.approvedHostnames)
+    : null;
 
   if (
     !["https:", "http:"].includes(parsed.protocol)
@@ -50,6 +74,20 @@ export function resolveGatewayOrigin(value: unknown): GatewayOriginConfig {
   }
   if (parsed.protocol === "http:" && !isLoopback) {
     return { origin: null, error: "Remote gateway origins must use HTTPS." };
+  }
+  if (options.production) {
+    if (parsed.protocol !== "https:" || isLoopback) {
+      return { origin: null, error: "Production gateway origins must use HTTPS on an approved remote hostname." };
+    }
+    if (parsed.port) {
+      return { origin: null, error: "Production gateway origins must use the standard HTTPS port." };
+    }
+    if (!approvedHostnames) {
+      return { origin: null, error: "Set VITE_AGENTGUARD_ALLOWED_API_HOSTS for production builds." };
+    }
+    if (!approvedHostnames.has(hostname)) {
+      return { origin: null, error: "The configured gateway hostname is not approved for production." };
+    }
   }
 
   return { origin: parsed.origin, error: null };
@@ -92,11 +130,6 @@ export async function requestGatewayJson<T>(
   return body;
 }
 
-export function clearPrivilegedSessionOnAuthFailure(
-  status: number,
-  clear: () => void,
-): boolean {
-  if (status !== 401 && status !== 403) return false;
+export function clearPrivilegedSessionOnRequestFailure(clear: () => void): void {
   clear();
-  return true;
 }

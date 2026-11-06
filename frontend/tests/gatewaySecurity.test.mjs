@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  clearPrivilegedSessionOnAuthFailure,
+  clearPrivilegedSessionOnRequestFailure,
   GatewayAuthenticationError,
   requestGatewayJson,
   resolveGatewayOrigin,
@@ -21,6 +21,32 @@ test("missing, malformed, insecure remote, and ambiguous origin configuration fa
     assert.equal(config.origin, null, String(value));
     assert.ok(config.error, String(value));
   }
+});
+
+test("production origins require HTTPS and an explicitly approved DNS hostname", () => {
+  const production = {
+    production: true,
+    approvedHostnames: "api.agentguard.example,staging.agentguard.example",
+  };
+  assert.equal(
+    resolveGatewayOrigin("https://api.agentguard.example", production).origin,
+    "https://api.agentguard.example",
+  );
+
+  for (const origin of [
+    "http://127.0.0.1:8000",
+    "https://127.0.0.1",
+    "https://localhost",
+    "https://attacker.example",
+    "https://api.agentguard.example:8443",
+  ]) {
+    assert.equal(resolveGatewayOrigin(origin, production).origin, null, origin);
+  }
+  assert.equal(
+    resolveGatewayOrigin("https://api.agentguard.example", { production: true }).origin,
+    null,
+    "production fails closed when the hostname allowlist is missing",
+  );
 });
 
 test("requests attach the bearer only to the configured origin", async () => {
@@ -48,28 +74,40 @@ test("requests attach the bearer only to the configured origin", async () => {
   assert.equal(calls.length, 1, "no request or Authorization header reaches an untrusted origin");
 });
 
-test("401 and 403 clear privileged session state while other errors do not", async () => {
+test("authentication, server, and network failures clear privileged session state", async () => {
   const config = resolveGatewayOrigin("https://gateway.example.com");
-  for (const status of [401, 403]) {
-    const authFailure = requestGatewayJson(config, "admin-secret", "/api/overview", async () => ({
-      ok: false,
-      status,
-      json: async () => ({}),
-    }));
-    await assert.rejects(authFailure, (error) => error instanceof GatewayAuthenticationError && error.status === status);
-
+  for (const failure of [
+    ...[401, 403].map((status) => ({
+      run: () => requestGatewayJson(config, "admin-secret", "/api/overview", async () => ({
+        ok: false,
+        status,
+        json: async () => ({}),
+      })),
+      check: (error) => error instanceof GatewayAuthenticationError && error.status === status,
+    })),
+    {
+      run: () => requestGatewayJson(config, "admin-secret", "/api/overview", async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({}),
+      })),
+      check: (error) => error instanceof Error && /503/.test(error.message),
+    },
+    {
+      run: () => requestGatewayJson(config, "admin-secret", "/api/overview", async () => {
+        throw new TypeError("Network unavailable");
+      }),
+      check: (error) => error instanceof TypeError && /Network unavailable/.test(error.message),
+    },
+  ]) {
+    await assert.rejects(failure.run(), failure.check);
     const session = { data: { audit: ["private"] }, token: "admin-secret", origin: config.origin, updatedAt: 1 };
-    const cleared = clearPrivilegedSessionOnAuthFailure(status, () => {
+    clearPrivilegedSessionOnRequestFailure(() => {
       session.data = null;
       session.token = "";
       session.origin = null;
       session.updatedAt = null;
     });
-    assert.equal(cleared, true);
     assert.deepEqual(session, { data: null, token: "", origin: null, updatedAt: null });
   }
-
-  let cleared = false;
-  assert.equal(clearPrivilegedSessionOnAuthFailure(503, () => { cleared = true; }), false);
-  assert.equal(cleared, false);
 });

@@ -17,6 +17,7 @@ DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "crm.db"
 @dataclass(frozen=True)
 class AuthFailureSettings:
     max_failures: int = 20
+    max_auth_requests: int = 300
     window_seconds: int = 60
     max_client_buckets: int = 4096
     retention_events: int = 10000
@@ -40,6 +41,9 @@ def get_auth_failure_settings() -> AuthFailureSettings:
     return AuthFailureSettings(
         max_failures=_bounded_env_int(
             "AGENTGUARD_AUTH_FAILURE_LIMIT", 20, minimum=1, maximum=100
+        ),
+        max_auth_requests=_bounded_env_int(
+            "AGENTGUARD_AUTH_REQUEST_LIMIT", 300, minimum=1, maximum=10000
         ),
         window_seconds=_bounded_env_int(
             "AGENTGUARD_AUTH_FAILURE_WINDOW_SECONDS", 60, minimum=1, maximum=3600

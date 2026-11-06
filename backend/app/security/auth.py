@@ -155,11 +155,18 @@ class AgentAuthenticationMiddleware:
         authenticator: AgentAuthenticator,
         audit: AuditStore,
         failure_limiter: "AuthenticationFailureRateLimiter | None" = None,
+        *,
+        request_limiter: "AuthenticationRequestRateLimiter | None" = None,
     ):
         self.app = app
         self.authenticator = authenticator
         self.audit = audit
         settings = get_auth_failure_settings()
+        self.request_limiter = request_limiter or AuthenticationRequestRateLimiter(
+            max_requests=settings.max_auth_requests,
+            window_seconds=settings.window_seconds,
+            max_client_buckets=settings.max_client_buckets,
+        )
         self.failure_limiter = failure_limiter or AuthenticationFailureRateLimiter(
             max_failures=settings.max_failures,
             window_seconds=settings.window_seconds,
@@ -178,20 +185,13 @@ class AgentAuthenticationMiddleware:
             return "unknown"
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
-        allowed, retry_after = self.failure_limiter.allow(self._peer_identity(scope))
-        if not allowed:
-            response = JSONResponse(
-                {"error": "too_many_authentication_failures"},
-                status_code=429,
-                headers={"Retry-After": str(max(1, ceil(retry_after)))},
-            )
-            await response(scope, receive, send)
-            return
-        try:
-            await asyncio.to_thread(self.audit.record_authentication_failure, reason)
-        except Exception:
-            # The request remains denied; fallback logging contains only a fixed category.
-            logger.error("Authentication failure audit could not be persisted (%s)", reason)
+        audit_allowed, _retry_after = self.failure_limiter.allow(self._peer_identity(scope))
+        if audit_allowed:
+            try:
+                await asyncio.to_thread(self.audit.record_authentication_failure, reason)
+            except Exception:
+                # The request remains denied; fallback logging contains only a fixed category.
+                logger.error("Authentication failure audit could not be persisted (%s)", reason)
         response = JSONResponse(
             {"error": "unauthorized"}, status_code=401,
             headers={"WWW-Authenticate": "Bearer"},
@@ -201,6 +201,16 @@ class AgentAuthenticationMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
+            return
+        peer_identity = self._peer_identity(scope)
+        request_allowed, retry_after = self.request_limiter.allow(peer_identity)
+        if not request_allowed:
+            response = JSONResponse(
+                {"error": "too_many_authentication_requests"},
+                status_code=429,
+                headers={"Retry-After": str(max(1, ceil(retry_after)))},
+            )
+            await response(scope, receive, send)
             return
         authorization_headers = [
             value for key, value in scope.get("headers", []) if key.lower() == b"authorization"
@@ -235,7 +245,12 @@ class AgentAuthenticationMiddleware:
 
 
 class AuthenticationFailureRateLimiter:
-    """Bounded per-process sliding-window limiter keyed by the socket peer address."""
+    """Bounded per-process sliding-window limiter keyed by the socket peer address.
+
+    When the peer table is full, new peers share one overflow bucket. Existing
+    active buckets are never evicted, so rotating peer identities cannot reset
+    an existing peer's window. Expired buckets are reclaimed periodically.
+    """
 
     def __init__(
         self,
@@ -253,25 +268,64 @@ class AuthenticationFailureRateLimiter:
         self.window_seconds = window_seconds
         self.max_client_buckets = max_client_buckets
         self._clock = clock
-        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
+        self._failures: OrderedDict[str | None, deque[float]] = OrderedDict()
+        self._named_bucket_count = 0
         self._lock = threading.Lock()
+        self._last_expiry_sweep = float("-inf")
+        self._expiry_sweep_interval = min(float(window_seconds), 10.0)
 
     def allow(self, peer_identity: str) -> tuple[bool, float]:
-        """Record one failed attempt and return whether its sanitized audit may be written."""
+        """Record one event; None signals that the peer is over its window limit."""
         now = self._clock()
-        key = peer_identity if isinstance(peer_identity, str) and peer_identity else "unknown"
+        requested_key = peer_identity if isinstance(peer_identity, str) and peer_identity else "unknown"
         with self._lock:
+            key: str | None = requested_key
+            named_buckets = self._named_bucket_count
+            named_capacity = max(0, self.max_client_buckets - 1)
+            if key not in self._failures and named_buckets >= named_capacity:
+                if now - self._last_expiry_sweep >= self._expiry_sweep_interval:
+                    cutoff = now - self.window_seconds
+                    for bucket_key, timestamps in list(self._failures.items()):
+                        while timestamps and timestamps[0] <= cutoff:
+                            timestamps.popleft()
+                        if not timestamps:
+                            del self._failures[bucket_key]
+                            if bucket_key is not None:
+                                self._named_bucket_count -= 1
+                    self._last_expiry_sweep = now
+                    named_buckets = self._named_bucket_count
+                if named_buckets >= named_capacity:
+                    key = None
+
             failures = self._failures.get(key)
             if failures is None:
                 failures = deque()
                 self._failures[key] = failures
+                if key is not None:
+                    self._named_bucket_count += 1
             cutoff = now - self.window_seconds
             while failures and failures[0] <= cutoff:
                 failures.popleft()
-            self._failures.move_to_end(key)
-            while len(self._failures) > self.max_client_buckets:
-                self._failures.popitem(last=False)
             if len(failures) >= self.max_failures:
                 return False, max(0.0, failures[0] + self.window_seconds - now)
             failures.append(now)
             return True, 0.0
+
+
+class AuthenticationRequestRateLimiter(AuthenticationFailureRateLimiter):
+    """Apply a peer request budget before credential-registry lookups."""
+
+    def __init__(
+        self,
+        *,
+        max_requests: int,
+        window_seconds: int,
+        max_client_buckets: int,
+        clock=time.monotonic,
+    ) -> None:
+        super().__init__(
+            max_failures=max_requests,
+            window_seconds=window_seconds,
+            max_client_buckets=max_client_buckets,
+            clock=clock,
+        )
